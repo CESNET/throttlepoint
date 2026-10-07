@@ -118,12 +118,13 @@ def fetch_wattnet_24h(config):
             avg = sum(float(v[1]) for v in chunk) / len(chunk)
             hourly_values.append(round(avg))
 
-    # Most recent hourly average is the "current" value for wattnet
-    # (consistent with nowtricity where current ≈ history[0])
-    current_hourly = hourly_values[0] if hourly_values else None
-
     # Reverse to newest first (to match Nowtricity order) and take last 24
     result = hourly_values[::-1][:24]
+
+    # Most recent hourly average is the "current" value for wattnet
+    # (consistent with nowtricity where current ≈ history[0]). Read it after
+    # the reverse: before it, index 0 is the OLDEST hour.
+    current_hourly = result[0] if result else None
 
     if len(result) < 24:
         raise ValueError(f"Wattnet API returned only {len(result)}/24 hourly values")
