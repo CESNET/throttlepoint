@@ -142,3 +142,34 @@ rating_type=average
 # higher would let that day-relative volatility dominate the frequency cap.
 weight_price=0.6
 weight_co2=0.4
+
+# ============================================================================
+# PLUGIN PIPELINE (optional; replaces the [MODE] control_mode presets)
+# ============================================================================
+# Each evaluation runs four stages: read -> score -> act -> record. Every step
+# is a plugin: a built-in, or your own executable (see docs/plugins.md).
+# Without a [PIPELINE] section the plan follows [MODE] control_mode and behaves
+# exactly as before.
+#
+# Built-ins:  read: power, cpufreq | score: price, co2, combine |
+#             act: cpu_freq, cpu_thermo, gpu_power | record: db_log, state_json
+#
+# Example: regulate by CO2 alone (Nowtricity or Wattnet per [CO2_API]), no price:
+#
+#[PIPELINE]
+#score = co2, combine
+#act   = cpu_freq
+#
+# Example: swap in your own executable. A [plugin:NAME] section with `exec`
+# (absolute path, root-owned, not group/world-writable) overrides a built-in
+# of the same name or defines a new plugin. Other keys are passed to the plugin.
+#
+#[PIPELINE]
+#score = co2, threshold_score
+#act   = cpu_freq
+#
+#[plugin:threshold_score]
+#exec    = /etc/hpc_eff/plugins/threshold_score.py
+#timeout = 30
+#low     = 150
+#high    = 450

@@ -7,6 +7,7 @@ import argparse
 
 from .utils.create_log_db import create_log_db
 from .utils.controller import run_evaluation
+from .pipeline import PipelineError
 from .utils.cron_control import enable_cron, disable_cron
 
 # [MODE] control_mode is the SINGLE user-facing switch. It expands into the
@@ -45,12 +46,8 @@ static_context = {
     "score_name": config.get("SYSTEM", "SCORENAME", fallback="unknown"),
     "score_value": config.getfloat("SYSTEM", "SCORE", fallback=None),
     "power_cmd": power_cmd,
-    "plugins": {
-        "power": "power_reader.py",
-        "price": "energy_price.py",
-        "co2": "co2_value.py",
-        "temperature": "cpu_thermo.py"
-    }
+    # "plugins" (the active plugin names per stage) is filled in by the pipeline
+    "plugins": {},
 }
 
 debug = config.get("SYSTEM", "DEBUG", fallback="no").lower() == "yes"
@@ -71,6 +68,12 @@ def resolve_control_mode(config):
     mode = config.get("MODE", "control_mode", fallback=None)
     if mode:
         mode = mode.strip().lower()
+    elif config.has_section("PIPELINE"):
+        # An explicit [PIPELINE] replaces the control_mode presets entirely.
+        debug_log("[PIPELINE] present and no control_mode: using the pipeline as configured")
+        return
+    if config.has_section("PIPELINE"):
+        debug_log("[PIPELINE] takes precedence over control_mode; control_mode is ignored")
     preset = CONTROL_MODE_PRESETS.get(mode)
     if preset is None:
         valid = "|".join(CONTROL_MODE_PRESETS)
@@ -116,7 +119,10 @@ def main():
 
     # Expand [MODE] control_mode into internal flags, then delegate
     resolve_control_mode(config)
-    run_evaluation(conn, config, static_context, debug_log)
+    try:
+        run_evaluation(conn, config, static_context, debug_log)
+    except PipelineError as e:
+        sys.exit(f"Config error: {e}")
 
 if __name__ == "__main__":
     main()
