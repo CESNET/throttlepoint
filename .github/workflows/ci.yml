@@ -16,7 +16,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential devscripts debhelper dh-python \
-            python3-all python3-setuptools fakeroot
+            python3-all python3-setuptools python3-requests fakeroot
 
       - name: Build the package
         run: make deb
