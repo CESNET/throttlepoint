@@ -125,6 +125,22 @@ CPU regulation is mutually exclusive: a node is driven either by carbon/price
 or by temperature, never both. Details:
 [docs/regulation-modes.md](docs/regulation-modes.md).
 
+### Plugins
+
+Every evaluation is a pipeline of plugins: `read` → `score` → `act` → `record`.
+Without extra config it behaves exactly as above. To change it, add a
+`[PIPELINE]` section, for example CO₂ alone (no price) driving the CPU cap:
+
+```ini
+[PIPELINE]
+score = co2, combine
+act   = cpu_freq
+```
+
+Your own score or action is any executable that reads JSON on stdin and prints
+JSON on stdout. Contract, built-in plugins, security rules and starter files:
+[docs/plugins.md](docs/plugins.md).
+
 ---
 
 ## Data sources

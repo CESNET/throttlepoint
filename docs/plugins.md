@@ -67,9 +67,10 @@ A `[plugin:NAME]` with `exec` also **replaces a built-in of the same name**, so
 `[plugin:co2] exec = ...` swaps the data source without touching the rest of
 the pipeline. `exec = builtin:NAME` selects a built-in explicitly.
 
-Working examples are in [`examples/plugins/`](../examples/plugins):
-`threshold_score.py` (score from absolute gCO₂/kWh thresholds) and
-`echo_action.py` (an action that changes nothing: a template to copy).
+Working examples are in [`examples/plugins/`](../examples/plugins), installed
+with the package under `/usr/share/doc/hpc-eff/examples/` (RPM: `/usr/share/doc/hpc_eff/examples/`):
+`template.py` (a blank starter), `threshold_score.py` (score from absolute
+gCO₂/kWh thresholds) and `echo_action.py` (an action that changes nothing).
 
 ### The contract (version 1)
 

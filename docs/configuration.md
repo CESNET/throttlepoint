@@ -27,6 +27,7 @@ regulator actually reads:
 | `[TEMPERATURE_SOURCE]` | n/a | yes |
 | `[CPU_THERMO]` | n/a | yes |
 | `[GPU_POWER]` | n/a | yes |
+| `[PIPELINE]`, `[plugin:NAME]` | optional | optional |
 
 ---
 
@@ -158,7 +159,7 @@ weight_co2=0.4
 
 | Key | Default | Meaning |
 |---|---|---|
-| `rating_type` | `price` | `price` \| `average` \| `max`: see [regulation-modes.md](regulation-modes.md#choosing-rating_type) |
+| `rating_type` | `price` | `price` \| `co2` \| `average` \| `max`: see [regulation-modes.md](regulation-modes.md#choosing-rating_type) |
 | `weight_price` | `0.6` | Used by `average` only, normalised against `weight_co2` |
 | `weight_co2` | `0.4` | Used by `average` only |
 
@@ -307,6 +308,35 @@ scales (`[CPU_THERMO]` at 29/32 °C, `[GPU_POWER]` at 70/80 °C), so they cannot
 both be right for one sensor. Depending on the range your sensor actually
 produces, one section's thresholds may never trigger while the other's fire
 constantly. Set both pairs against that range.
+
+---
+
+## `[PIPELINE]` and `[plugin:NAME]`: choosing and extending the steps
+
+Optional. Replaces the `[MODE] control_mode` presets with an explicit list of
+plugins per stage.
+
+```ini
+[PIPELINE]
+score = co2, combine
+act   = cpu_freq
+
+[plugin:threshold_score]          # only for your own executables
+exec    = /etc/hpc_eff/plugins/threshold_score.py
+timeout = 30
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `read`, `score`, `act` | empty | Comma-separated plugin names, run in order |
+| `record` | `db_log, state_json` | Same, for the persistence stage |
+| `[plugin:NAME] exec` | built-in `NAME` | Absolute path to an executable, or `builtin:NAME` |
+| `[plugin:NAME] timeout` | `30` | Seconds before the plugin is killed |
+| other `[plugin:NAME]` keys | none | Passed to the plugin as-is |
+
+An invalid pipeline aborts the run with `Config error: ...` before any plugin
+starts. Built-in plugin names, the JSON contract and the security rules:
+[plugins.md](plugins.md).
 
 ---
 
