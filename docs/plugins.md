@@ -32,12 +32,13 @@ omitted. A stage you leave out is empty, except `record`, which defaults to
 ```ini
 # Wattnet (or Nowtricity) CO2 alone drives the CPU cap. No price fetch.
 [PIPELINE]
-score = co2, combine
+score = co2
 act   = cpu_freq
 ```
 
-`combine` with no `price` plugin simply passes the CO₂ rating through. To pick
-the data source, set `[CO2_API] TYPE = wattnet`.
+On its own, `co2` makes its grade the `rating`. Add `combine` only when `price`
+is listed too, to choose how the two mix (`[aggregation]`). To pick the data
+source, set `[CO2_API] TYPE = wattnet`.
 
 An invalid pipeline (unknown key, unknown plugin, a plugin listed under the
 wrong stage, a bad executable) aborts the run before anything starts, with

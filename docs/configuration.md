@@ -318,7 +318,7 @@ plugins per stage.
 
 ```ini
 [PIPELINE]
-score = co2, combine
+score = co2
 act   = cpu_freq
 
 [plugin:threshold_score]          # only for your own executables

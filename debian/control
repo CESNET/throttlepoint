@@ -2,7 +2,7 @@ Source: hpc-eff
 Section: utils
 Priority: optional
 Maintainer: CESNET <pailozian@cesnet.cz>
-Build-Depends: debhelper (>= 12), dh-python, python3-all, python3-setuptools, python3-requests
+Build-Depends: debhelper (>= 12), dh-python, python3-all, python3-setuptools, python3-numpy, python3-requests
 Standards-Version: 4.6.0
 X-Python3-Version: >= 3.9
 
