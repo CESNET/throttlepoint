@@ -165,7 +165,11 @@ def co2(req, config, rt):
         # CO2 grade (1 low - 10 high) doubles as the CO2 rating
         "rating_co2": grade if isinstance(grade, int) else None,
     }
-    return {"set": values, "state": dict(values)}
+    state = dict(values)
+    if values["rating_co2"] is not None:
+        # On its own, the CO2 grade is the rating. `combine`, when listed, overrides it.
+        values["rating"] = state["rating"] = values["rating_co2"]
+    return {"set": values, "state": state}
 
 
 def combine(req, config, rt):

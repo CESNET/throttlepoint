@@ -157,7 +157,7 @@ weight_co2=0.4
 # Example: regulate by CO2 alone (Nowtricity or Wattnet per [CO2_API]), no price:
 #
 #[PIPELINE]
-#score = co2, combine
+#score = co2
 #act   = cpu_freq
 #
 # Example: swap in your own executable. A [plugin:NAME] section with `exec`

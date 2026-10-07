@@ -182,7 +182,7 @@ class RunPipelineTest(TempDirCase):
 
     def test_co2_only_pipeline_fetches_no_price(self):
         with mock.patch.object(pb, "get_current_energy_price", side_effect=AssertionError("price fetched")):
-            self.run_cfg("[PIPELINE]\nscore = co2, combine\nact = cpu_freq\n")
+            self.run_cfg("[PIPELINE]\nscore = co2\nact = cpu_freq\n")
         self.set_freq.assert_called_once()
         self.assertEqual(self.set_freq.call_args[0][0], 7)       # rating = CO2 grade
         entry = self.entry()
@@ -194,10 +194,15 @@ class RunPipelineTest(TempDirCase):
         self.assertEqual(self.row()["rating"], 7)
         self.assertEqual(self.row()["freq_max"], 2200000)
         static = json.loads(self.state.read_text())["static"]
-        self.assertEqual(static["plugins"]["score"], ["co2", "combine"])
+        self.assertEqual(static["plugins"]["score"], ["co2"])
+
+    def test_combine_after_co2_still_applies_aggregation(self):
+        with mock.patch.object(pb, "get_current_energy_price", side_effect=AssertionError("price fetched")):
+            self.run_cfg("[aggregation]\nrating_type=max\n[PIPELINE]\nscore = co2, combine\nact = cpu_freq\n")
+        self.assertEqual(self.set_freq.call_args[0][0], 7)       # no price plugin: CO2 passes through
 
     def test_co2_failure_falls_back_to_neutral_rating(self):
-        self.run_cfg("[PIPELINE]\nscore = co2, combine\nact = cpu_freq\n", co2=RuntimeError("401"))
+        self.run_cfg("[PIPELINE]\nscore = co2\nact = cpu_freq\n", co2=RuntimeError("401"))
         self.assertEqual(self.set_freq.call_args[0][0], 5)
         self.assertEqual(self.entry()["co2_grade"], "unknown")
 

@@ -24,6 +24,7 @@ killed; they run under a lower clock ceiling while conditions are bad.
 | [docs/cluster-rollout.md](docs/cluster-rollout.md) | Many nodes, upgrades, uninstall. |
 | [docs/configuration.md](docs/configuration.md) | Every key of `/etc/hpc_eff/config.ini`. |
 | [docs/regulation-modes.md](docs/regulation-modes.md) | What each mode does with its input: the rating maths, the thermal bands. |
+| [docs/plugins.md](docs/plugins.md) | The score/action pipeline: built-in plugins, writing your own, the JSON contract. |
 | [docs/monitoring.md](docs/monitoring.md) | Database schema, `state.json`, useful queries. |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Symptom-first fault finding. |
 
@@ -133,7 +134,7 @@ Without extra config it behaves exactly as above. To change it, add a
 
 ```ini
 [PIPELINE]
-score = co2, combine
+score = co2
 act   = cpu_freq
 ```
 
