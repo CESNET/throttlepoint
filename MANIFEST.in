@@ -1,3 +1,4 @@
 include src/hpc_eff/config.ini.example
 recursive-include src/hpc_eff/utils *.py *.sql
 recursive-include src/hpc_eff/pipeline *.py
+recursive-include examples *.py

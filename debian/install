@@ -1,1 +1,2 @@
 src/hpc_eff/config.ini.example etc/hpc_eff/
+examples/plugins usr/share/doc/hpc-eff/examples/

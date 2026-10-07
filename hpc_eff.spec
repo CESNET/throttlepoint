@@ -40,6 +40,8 @@ python3 setup.py build
 %install
 python3 setup.py install --root=%{buildroot} --prefix=/usr --skip-build --record=INSTALLED_FILES
 install -D -m 644 src/hpc_eff/config.ini.example %{buildroot}/etc/hpc_eff/config.ini
+install -d %{buildroot}%{_docdir}/%{name}/examples/plugins
+install -m 755 examples/plugins/*.py %{buildroot}%{_docdir}/%{name}/examples/plugins/
 
 # The setuptools console_scripts launcher resolves its entry point at runtime
 # via importlib.metadata. On Python 3.9 that reader does not reliably parse the
@@ -62,3 +64,4 @@ chmod 755 %{buildroot}/usr/bin/hpc-eff
 %defattr(-,root,root,-)
 %config(noreplace) /etc/hpc_eff/config.ini
 %doc README.md
+%{_docdir}/%{name}/examples
