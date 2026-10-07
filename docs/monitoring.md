@@ -86,13 +86,14 @@ A JSON file, rewritten in full on every run:
     "score_name": "SPEC2017",
     "score_value": 3.8,
     "power_cmd": "ipmitool dcmi power reading",
-    "plugins": { "power": "power_reader.py", "price": "energy_price.py",
-                 "co2": "co2_value.py", "temperature": "cpu_thermo.py" }
+    "plugins": { "read": ["power", "cpufreq"], "score": ["price", "co2", "combine"],
+                 "act": ["cpu_freq"], "record": ["db_log", "state_json"] }
   },
   "current": {
     "timestamp": "2026-08-21T10:00:03Z",
     "rating": 5, "rating_price": 6, "rating_co2": 4,
     "selected_freq_khz": 2600000,
+    "summary": "Price 2431 is average; Combined rating 5 (price 6, CO2 4)",
     "action_price": "Price 2431 is average; Combined rating 5 (price 6, CO2 4)",
     "price": 2431, "co2_current": 412, "co2_median": 448, "co2_grade": 4,
     "power_w": 287, "cpu_freq_current": 2712
@@ -108,10 +109,13 @@ The example above is a `co2`-mode node. A `temperature`-mode node carries
 `temperature`, `thermo_freq_limit`, and `action_temp` instead, plus the `gpu_*`
 fields on GPU nodes; the price and rating keys are absent entirely.
 
-`action_price` (and `action_temp` in `temperature` mode) is the human-readable
+`summary` (and `action_temp` in `temperature` mode) is the human-readable
 summary of what the run decided: the fastest thing to eyeball when something
 looks wrong. **`action_temp` exists only here, not in the database**, so it is
 the only place a thermal failure explains itself.
+
+`action_price` is a **deprecated** copy of `summary`, written only when the
+`price` plugin runs. It will be removed in a later release; read `summary`.
 
 Each run reads the whole file, replaces `current`, prepends the new entry to
 `history` (trimmed to `history_length`), refreshes `static`, and writes the
