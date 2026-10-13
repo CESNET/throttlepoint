@@ -8,7 +8,9 @@ executable plugins get the same request/response as JSON instead.
 """
 
 import json
+import logging
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..utils.energy_price import get_current_energy_price, get_averages_year, classify_price_by_median
@@ -146,8 +148,37 @@ def price(req, config, rt):
     return {"set": values, "state": state}
 
 
+def _last_fresh_co2_grade(config):
+    """(grade, age in minutes) of the newest real CO2 grade in state.json, or None.
+
+    Grid CO2 is published hourly, so a grade up to [CO2_API] MAX_AGE_MIN old
+    (default 120) still describes the grid; older ones are a guess.
+    """
+    max_age = config.getint("CO2_API", "MAX_AGE_MIN", fallback=120)
+    path = config.get("logging", "state_json_path", fallback=DEFAULT_STATE_PATH)
+    try:
+        with open(path, "r") as f:
+            history = json.load(f).get("history", [])
+    except Exception:
+        return None
+    now = datetime.now(timezone.utc)
+    for entry in history:
+        if entry.get("co2_fallback") or not isinstance(entry.get("co2_grade"), int):
+            continue
+        try:
+            ts = datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except (KeyError, ValueError):
+            continue
+        age_min = int((now - ts).total_seconds() // 60)
+        if age_min <= max_age:
+            return entry["co2_grade"], age_min
+        return None
+    return None
+
+
 def co2(req, config, rt):
     """CO2 intensity (Nowtricity or Wattnet per [CO2_API]), graded 1-10 as a 24 h percentile."""
+    co2_error = None
     try:
         history, current, median, grade = co2_value(config)
         rt.debug_log(f"Last 24 hours CO2 values (g CO2eq/kWh): {history}")
@@ -157,6 +188,16 @@ def co2(req, config, rt):
     except Exception as e:
         current, median, grade = None, None, "unknown"
         rt.debug_log(f"Error fetching co2 values and rating: {e}")
+        logging.getLogger("hpc_eff").warning("CO2 data unavailable: %s", e)
+        # The reason goes into state.json: cron discards the log output
+        reason = " ".join(str(e).split())[:160]
+        co2_error = f"CO2 unavailable ({type(e).__name__}: {reason})"
+        last = _last_fresh_co2_grade(config)
+        if last is not None:
+            grade, age_min = last
+            co2_error += f"; reusing grade {grade} from {age_min} min ago"
+        else:
+            co2_error += "; no CO2 data within max age, rating 1 (no slowdown)"
 
     values = {
         "co2_current": current,
@@ -166,9 +207,17 @@ def co2(req, config, rt):
         "rating_co2": grade if isinstance(grade, int) else None,
     }
     state = dict(values)
+    # A fallback grade is never reused itself, so a long outage cannot chain it forward
+    state["co2_fallback"] = co2_error is not None
+    if co2_error:
+        state["summary"] = co2_error
     if values["rating_co2"] is not None:
         # On its own, the CO2 grade is the rating. `combine`, when listed, overrides it.
         values["rating"] = state["rating"] = values["rating_co2"]
+    elif co2_error:
+        # No recent data: do not slow the node down without evidence. rating_co2
+        # stays None, so `combine` (when listed) falls back to price as before.
+        values["rating"] = state["rating"] = 1
     return {"set": values, "state": state}
 
 

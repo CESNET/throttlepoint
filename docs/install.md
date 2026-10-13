@@ -6,7 +6,8 @@ configure and start it.
 
 ThrottlePoint is not a daemon. It is a short-lived program that root runs
 periodically from `/etc/cron.d/hpc-eff`, every 10 minutes by default. What it
-does on each run depends on `[MODE] control_mode`; see
+does on each run depends on the shipped `[PIPELINE]` (CO₂ only by default) or,
+if you remove it, on `[MODE] control_mode`; see
 [regulation-modes.md](regulation-modes.md).
 
 ---
@@ -23,12 +24,12 @@ Required in both modes:
 | A writable cpufreq interface | Otherwise the cap silently does nothing | `cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq` |
 | `ipmitool` + DCMI-capable BMC | Power reading for the log (optional) | `ipmitool dcmi power reading` |
 
-Additionally, for `control_mode = co2`:
+Additionally, for CO₂ regulation (the default):
 
 | Requirement | Why | Check |
 |---|---|---|
 | Outbound HTTPS | Price and CO₂ data | see below |
-| A Nowtricity API key | CO₂ rating | https://www.nowtricity.com/ |
+| A Wattnet login (default) **or** a Nowtricity API key | CO₂ rating | Wattnet: email + password, registered at https://api.wattnet.eu/token-request/ (see [configuration.md](configuration.md#typewattnet-default)) · Nowtricity: https://www.nowtricity.com/ |
 
 Additionally, for `control_mode = temperature`:
 
@@ -46,8 +47,8 @@ config; set `https_proxy` in the cron environment if you need one.
 | Host | Purpose | Required? |
 |---|---|---|
 | `spotovaelektrina.cz` | Current price and historical monthly averages | Yes: price rating |
-| `www.nowtricity.com` | CO₂ intensity (default backend) | Only if `TYPE=nowtricity` |
-| `api.wattnet.eu` | CO₂ intensity (alternative backend) | Only if `TYPE=wattnet` |
+| `www.nowtricity.com` | CO₂ intensity (alternative backend) | Only if `TYPE=nowtricity` |
+| `api.wattnet.eu` | CO₂ intensity and the daily token login (default backend) | Only if `TYPE=wattnet` |
 
 Pre-flight check:
 
@@ -138,10 +139,10 @@ gh run download <run-id> -n hpc-eff-deb   # or hpc-eff-rpm
 | `/var/lib/hpc_eff/state.json` | Current state and rolling history, first run |
 | `/etc/cron.d/hpc-eff` | Created by `hpc-eff --enable` |
 
-> **Caution:** the DEB `postinst` runs `hpc-eff --enable` automatically, so on
-> Debian and Ubuntu the cron job is live the moment you install, before you
-> have configured anything. The RPM does not do this. On Debian, either
-> configure immediately or run `sudo hpc-eff --disable` first.
+> **Note:** neither the DEB nor the RPM enables cron on install. Nothing
+> regulates until you run `sudo hpc-eff --enable`, after setting the API key
+> and checking one manual `sudo hpc-eff` run. Upgrading keeps an existing
+> cron job.
 
 ---
 

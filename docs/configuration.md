@@ -80,12 +80,12 @@ only, never acted on.
 
 ```ini
 [CO2_API]
-TYPE=nowtricity
+TYPE=wattnet
 ```
 
 `TYPE` selects the backend; the other backend's keys are ignored.
 
-### `TYPE=nowtricity` (default)
+### `TYPE=nowtricity`
 
 | Key | Default |
 |---|---|
@@ -98,22 +98,81 @@ Two endpoints are called per run: `emissions-previous-24h/<zone>/` and
 node per day: check that against your plan's quota before a cluster-wide
 rollout.
 
-An API key for the default `nowtricity` backend is sent as `X-Api-Key`; get one
+An API key for the `nowtricity` backend is sent as `X-Api-Key`; get one
 at nowtricity.com.
 
-### `TYPE=wattnet`
+### `TYPE=wattnet` (default)
+
+**Wattnet requires a login (email and password). There are no API keys.**
 
 | Key | Default |
 |---|---|
+| `WATTNET_EMAIL` | none, **required** |
+| `WATTNET_PASSWORD` | none, **required** |
+| `WATTNET_TOKEN_CACHE` | `/var/lib/hpc_eff/wattnet_token.json` |
+| `WATTNET_TOKEN_URL` | `https://api.wattnet.eu/token-request/get_token` |
 | `WATTNET_URL` | `https://api.wattnet.eu/v1/footprints` |
 | `WATTNET_ZONE` | `CZ` |
 | `WATTNET_FOOTPRINT_TYPE` | `carbon` |
 | `WATTNET_SCOPE` | `operational` |
 
-The 24-hour window is computed automatically. Wattnet returns 15-minute
-samples, which are averaged into 24 hourly values; the newest hourly average
-doubles as the "current" value. **If fewer than 24 hourly values come back the
-call fails** and the run falls back to the price rating.
+```ini
+[CO2_API]
+TYPE=wattnet
+WATTNET_EMAIL=throttlepoint@your-site.example
+WATTNET_PASSWORD=<password>
+```
+
+#### Getting a login
+
+1. Request API access at [wattnet.eu/contact](https://wattnet.eu/contact).
+   Registration only works once your email is approved.
+2. Register once with the token service at
+   [https://api.wattnet.eu/token-request/](https://api.wattnet.eu/token-request/):
+   ```bash
+   curl -X POST https://api.wattnet.eu/token-request/register \
+        -H "Content-Type: application/json" \
+        -d '{"email": "<email>", "password": "<password>"}'
+   ```
+3. Put the same email and password in `[CO2_API]`.
+
+Wattnet suggests a dedicated account for unattended services, not a personal
+one. The email does not need to be a real mailbox.
+
+#### How the token is handled
+
+Wattnet tokens are valid for 24 hours and there are no refresh tokens. On the
+first run ThrottlePoint logs in at `/token-request/get_token` and caches the
+token in `WATTNET_TOKEN_CACHE` (mode 600). Later runs reuse it and log in again
+about 10 minutes before it expires: one login per node per day, as Wattnet
+asks. A wrong email or password fails the CO₂ fetch with
+`Wattnet login rejected`.
+
+The config file now holds a password: make it readable by root only
+(`chmod 600 /etc/hpc_eff/config.ini`).
+
+Full API documentation: [docs.wattnet.eu](https://docs.wattnet.eu/user-guide/api/api-access/).
+
+#### Data
+
+The 24-hour window is computed automatically. Wattnet splits the response into
+several series by data state: final data ends about 4 hours ago, newer data is
+pending or a preview and may still be revised slightly. All series are merged
+(final data wins on overlap) so the newest point is about now. The 15-minute
+samples are averaged per clock hour; the newest, possibly partial, hour is the
+"current" value. **If fewer than 24 hourly values come back the call fails**,
+and the CO₂ fallback below applies.
+
+### When the CO₂ fetch fails
+
+The last real CO₂ grade is reused if it is at most `MAX_AGE_MIN` minutes old
+(default 120, i.e. one missed hourly value plus slack). Older or none: rating 1,
+no slowdown without evidence. Each failure logs a WARNING and a
+`CO2 unavailable (...)` summary in `state.json`.
+
+| Key | Default |
+|---|---|
+| `MAX_AGE_MIN` | `120` |
 
 ---
 

@@ -1,6 +1,15 @@
+import base64
+import json
+import os
 import requests
 import statistics
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+WATTNET_TOKEN_URL = 'https://api.wattnet.eu/token-request/get_token'
+WATTNET_TOKEN_CACHE = '/var/lib/hpc_eff/wattnet_token.json'
+# Refresh this long before expiry so a token never dies mid-request
+TOKEN_REFRESH_MARGIN = timedelta(minutes=10)
 
 
 def _nowtricity_url(config, endpoint):
@@ -44,6 +53,80 @@ def fetch_current_emission(api_headers, config):
     return data['emissions']['value']
 
 
+def _jwt_expiry(token):
+    """The `exp` claim of a JWT as an aware datetime, or None. Not verified: only used for caching."""
+    try:
+        payload = token.split('.')[1]
+        payload += '=' * (-len(payload) % 4)
+        exp = json.loads(base64.urlsafe_b64decode(payload))['exp']
+        return datetime.fromtimestamp(exp, timezone.utc)
+    except Exception:
+        return None
+
+
+def _parse_expiry(value):
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _request_wattnet_token(config, email, password):
+    """Exchange email/password for a 24 h token at the Wattnet token-request service."""
+    url = config.get('CO2_API', 'WATTNET_TOKEN_URL', fallback=WATTNET_TOKEN_URL)
+    response = requests.post(url, json={'email': email, 'password': password}, timeout=15)
+    if response.status_code == 401:
+        raise ValueError("Wattnet login rejected: check WATTNET_EMAIL / WATTNET_PASSWORD")
+    response.raise_for_status()
+    data = response.json()
+    token = (data.get('access_token') or data.get('token')) if isinstance(data, dict) else None
+    if not token:
+        raise ValueError(f"Wattnet token response has no token field (keys: {list(data) if isinstance(data, dict) else type(data).__name__})")
+    expires_at = _parse_expiry(data.get('expires_at')) or _jwt_expiry(token) \
+        or datetime.now(timezone.utc) + timedelta(hours=23)
+    return token, expires_at
+
+
+def _wattnet_token(config, force_refresh=False):
+    """Bearer token for Wattnet.
+
+    Wattnet has no long-lived API keys: tokens last 24 h and cannot be
+    refreshed. The token is requested with WATTNET_EMAIL + WATTNET_PASSWORD and
+    cached in WATTNET_TOKEN_CACHE (mode 600) until shortly before it expires,
+    as Wattnet asks.
+    """
+    email = config.get('CO2_API', 'WATTNET_EMAIL', fallback='').strip()
+    password = config.get('CO2_API', 'WATTNET_PASSWORD', fallback='').strip()
+    if not (email and password):
+        raise ValueError("Wattnet needs WATTNET_EMAIL and WATTNET_PASSWORD in [CO2_API]")
+
+    cache = Path(config.get('CO2_API', 'WATTNET_TOKEN_CACHE', fallback=WATTNET_TOKEN_CACHE))
+    if not force_refresh:
+        try:
+            cached = json.loads(cache.read_text())
+            expires_at = _parse_expiry(cached.get('expires_at'))
+            if cached.get('email') == email and expires_at \
+                    and expires_at - TOKEN_REFRESH_MARGIN > datetime.now(timezone.utc):
+                return cached['token']
+        except Exception:
+            pass  # missing or unreadable cache: request a new token
+
+    token, expires_at = _request_wattnet_token(config, email, password)
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache.with_suffix('.tmp')
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            json.dump({'email': email, 'token': token, 'expires_at': expires_at.isoformat()}, f)
+        os.replace(tmp, cache)
+    except OSError:
+        pass  # not cacheable (e.g. not root): still usable for this run
+    return token
+
+
 def fetch_wattnet_24h(config):
     """
     Fetch emissions data for the past 24 hours from Wattnet API.
@@ -53,7 +136,7 @@ def fetch_wattnet_24h(config):
 
     Config keys used from [CO2_API]:
       - WATTNET_URL: base URL (e.g. https://api.wattnet.eu/v1/footprints)
-      - WATTNET_API_KEY: Bearer token
+      - WATTNET_EMAIL / WATTNET_PASSWORD: login, token fetched and cached
       - WATTNET_ZONE: default CZ
       - WATTNET_FOOTPRINT_TYPE: default carbon
       - WATTNET_SCOPE: default operational
@@ -64,7 +147,6 @@ def fetch_wattnet_24h(config):
             - current_hourly: int, most recent hourly average (or None if no data)
     """
     base_url = config.get('CO2_API', 'WATTNET_URL', fallback='https://api.wattnet.eu/v1/footprints')
-    api_key = config.get('CO2_API', 'WATTNET_API_KEY', fallback=None)
     zone = config.get('CO2_API', 'WATTNET_ZONE', fallback='CZ')
     footprint_type = config.get('CO2_API', 'WATTNET_FOOTPRINT_TYPE', fallback='carbon')
     scope = config.get('CO2_API', 'WATTNET_SCOPE', fallback='operational')
@@ -85,45 +167,62 @@ def fetch_wattnet_24h(config):
         'use_global': 'false'
     }
 
-    headers = {
-        'Accept': 'application/json'
-    }
-    if api_key and api_key != 'YOUR_API_KEY_HERE':
-        headers['Authorization'] = f'Bearer {api_key}'
+    def get(token):
+        headers = {'Accept': 'application/json', 'Authorization': f'Bearer {token}'}
+        # Redirects are not followed: a rejected token is answered with a 302 to
+        # the Wattnet login page (not the 401 its docs describe), and following
+        # it would return that HTML page with status 200.
+        return requests.get(base_url, params=params, headers=headers, timeout=15,
+                            allow_redirects=False)
 
-    response = requests.get(base_url, params=params, headers=headers, timeout=15)
+    def rejected(response):
+        return response.status_code == 401 or response.is_redirect
+
+    response = get(_wattnet_token(config))
+    if rejected(response):
+        # Cached token revoked, or expired before its stated expiry: log in again once
+        response = get(_wattnet_token(config, force_refresh=True))
+        if rejected(response):
+            raise ValueError("Wattnet rejected a freshly issued token "
+                             f"(HTTP {response.status_code}); check the account's API access")
     response.raise_for_status()
-    data = response.json()
-
-    # Parse wattnet structure: [{"series": [{"values": [[timestamp, value], ...]}]}]
     try:
-        values_15min = data[0]['series'][0]['values']
-    except (KeyError, IndexError, TypeError) as e:
+        data = response.json()
+    except ValueError:
+        raise ValueError(f"Wattnet returned non-JSON data ({response.headers.get('content-type')})")
+
+    # Parse wattnet structure: [{"series": [{"valid": bool, "zone_status": str,
+    # "values": [[timestamp, value], ...]}, ...]}]. Series split one time range by
+    # data state: final (valid) data ends ~4 h ago, newer data comes in pending
+    # and preview series. All are merged so the newest point is "now"; pending
+    # values may still be revised slightly by Wattnet.
+    try:
+        series = data[0]['series']
+        merged = {}
+        for entry in series:
+            for ts, value in entry['values']:
+                if value is None:
+                    continue
+                # On overlap, final data wins over pending/preview
+                if ts not in merged or entry.get('valid', True):
+                    merged[ts] = float(value)
+    except (KeyError, IndexError, TypeError, ValueError) as e:
         raise ValueError(
             f"Unexpected wattnet API structure: {e}. "
-            f"Expected: data[0]['series'][0]['values'] = [[ts, value], ...]"
+            f"Expected: data[0]['series'][i]['values'] = [[ts, value], ...]"
         )
 
-    if not values_15min:
+    if not merged:
         raise ValueError("Wattnet API returned empty values array")
 
-    # Sort by timestamp ascending (oldest first) for proper chunking
-    values_15min.sort(key=lambda x: x[0])
+    # Average the 15-minute points per clock hour ("2026-10-13T12" -> mean)
+    by_hour = {}
+    for ts, value in merged.items():
+        by_hour.setdefault(ts[:13], []).append(value)
 
-    # Convert 15-minute intervals to hourly averages (4 values per hour)
-    hourly_values = []
-    for i in range(0, len(values_15min), 4):
-        chunk = values_15min[i:i + 4]
-        if chunk:
-            avg = sum(float(v[1]) for v in chunk) / len(chunk)
-            hourly_values.append(round(avg))
-
-    # Reverse to newest first (to match Nowtricity order) and take last 24
-    result = hourly_values[::-1][:24]
-
-    # Most recent hourly average is the "current" value for wattnet
-    # (consistent with nowtricity where current ≈ history[0]). Read it after
-    # the reverse: before it, index 0 is the OLDEST hour.
+    # Newest hour first (to match Nowtricity order), last 24 hours. The newest
+    # hour may be partial (e.g. 12:00-12:30); its average is the "current" value.
+    result = [round(sum(v) / len(v)) for _, v in sorted(by_hour.items(), reverse=True)][:24]
     current_hourly = result[0] if result else None
 
     if len(result) < 24:
@@ -169,7 +268,7 @@ def co2_value(config):
             - median_value: median of historical_values
             - grade: 1-10 rating based on percentile
     """
-    api_type = config.get('CO2_API', 'TYPE', fallback='nowtricity').strip().lower()
+    api_type = config.get('CO2_API', 'TYPE', fallback='wattnet').strip().lower()
 
     if api_type == "wattnet":
         historical_values, current_hourly = fetch_wattnet_24h(config)

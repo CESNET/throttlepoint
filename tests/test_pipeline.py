@@ -5,6 +5,7 @@ Run from the repo root:  PYTHONPATH=src python3 -m unittest discover -s tests -v
 Nothing here touches the real system: cpupower/nvidia-smi calls, the network
 and the config under /etc are all mocked or redirected into temp directories.
 """
+import base64
 import configparser
 import json
 import os
@@ -65,18 +66,164 @@ class WattnetParsingTest(unittest.TestCase):
         for i in range(96):                      # 96 x 15 min = 24 h, rising 100 -> 195
             ts = (end - timedelta(minutes=15 * (95 - i))).strftime("%Y-%m-%dT%H:%M:%SZ")
             samples.append([ts, 100 + i])
-        response = mock.Mock()
+        response = mock.Mock(status_code=200, is_redirect=False)
         response.json.return_value = [{"series": [{"values": samples}]}]
         response.raise_for_status.return_value = None
-        cfg = make_config("[CO2_API]\nTYPE=wattnet\nWATTNET_API_KEY=x\n")
+        cfg = make_config("[CO2_API]\nTYPE=wattnet\n")
 
-        with mock.patch.object(co2_mod.requests, "get", return_value=response):
+        with mock.patch.object(co2_mod, "_wattnet_token", return_value="x"), \
+             mock.patch.object(co2_mod.requests, "get", return_value=response):
             history, current, _median, grade = co2_mod.co2_value(cfg)
 
         self.assertEqual(len(history), 24)
         self.assertEqual(current, history[0])
         self.assertGreater(current, 190)         # newest hour (was ~102 before the fix)
         self.assertEqual(grade, 10)
+
+
+class WattnetSeriesTest(unittest.TestCase):
+    """Live responses split one range into final, pending and preview series."""
+
+    def test_merges_all_series_and_groups_by_clock_hour(self):
+        end = datetime(2026, 10, 13, 12, 30, tzinfo=timezone.utc)
+        points = [(end - timedelta(minutes=15 * i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(97)][::-1]
+        final = [[ts, 400] for ts in points[:81]]                 # .. 08:30
+        pending = [[ts, 320] for ts in points[81:94]]             # 08:45 .. 11:45
+        preview = [[ts, 300] for ts in points[94:]]               # 12:00 .. 12:30
+        response = mock.Mock(status_code=200, is_redirect=False)
+        response.json.return_value = [{"series": [
+            {"valid": True, "zone_status": "complete", "values": final},
+            {"valid": False, "zone_status": "complete", "values": pending},
+            {"valid": False, "zone_status": "preview", "values": preview}]}]
+        cfg = make_config("[CO2_API]\n")
+        with mock.patch.object(co2_mod, "_wattnet_token", return_value="x"), \
+             mock.patch.object(co2_mod.requests, "get", return_value=response):
+            history, current = co2_mod.fetch_wattnet_24h(cfg)
+        self.assertEqual(len(history), 24)
+        self.assertEqual(current, 300)                            # 12:00-12:30 preview hour, not 08:30
+        self.assertEqual(history[1], 320)                         # 11:00 hour, pending
+        self.assertEqual(history[4], round((400 * 3 + 320) / 4))  # 08:00 hour: final 08:00-08:30 + pending 08:45
+
+    def test_final_value_wins_on_overlap(self):
+        ts = [(datetime(2026, 10, 13, tzinfo=timezone.utc) - timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+              for h in range(24)]
+        response = mock.Mock(status_code=200, is_redirect=False)
+        response.json.return_value = [{"series": [
+            {"valid": False, "values": [[ts[0], 999]]},
+            {"valid": True, "values": [[t, 100] for t in ts]}]}]
+        with mock.patch.object(co2_mod, "_wattnet_token", return_value="x"), \
+             mock.patch.object(co2_mod.requests, "get", return_value=response):
+            _, current = co2_mod.fetch_wattnet_24h(make_config("[CO2_API]\n"))
+        self.assertEqual(current, 100)
+
+
+class WattnetTokenTest(TempDirCase):
+    """Login, cache and refresh of the 24 h Wattnet token."""
+
+    def cfg(self, extra=""):
+        return make_config(f"[CO2_API]\nTYPE=wattnet\nWATTNET_EMAIL=bot@x\nWATTNET_PASSWORD=pw\n"
+                           f"WATTNET_TOKEN_CACHE={self.tmp / 'tok.json'}\n" + extra)
+
+    def login_response(self, token="T1", hours=24):
+        r = mock.Mock(status_code=200)
+        r.json.return_value = {"access_token": token,
+                               "expires_at": (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()}
+        return r
+
+    def test_login_then_cache_hit(self):
+        with mock.patch.object(co2_mod.requests, "post", return_value=self.login_response()) as post:
+            self.assertEqual(co2_mod._wattnet_token(self.cfg()), "T1")
+            self.assertEqual(co2_mod._wattnet_token(self.cfg()), "T1")
+        post.assert_called_once()                                   # second call served from cache
+        self.assertEqual(post.call_args.kwargs["json"], {"email": "bot@x", "password": "pw"})
+        self.assertEqual(os.stat(self.tmp / "tok.json").st_mode & 0o777, 0o600)
+
+    def test_near_expiry_logs_in_again(self):
+        with mock.patch.object(co2_mod.requests, "post",
+                               side_effect=[self.login_response("OLD", hours=0.1), self.login_response("NEW")]):
+            co2_mod._wattnet_token(self.cfg())
+            self.assertEqual(co2_mod._wattnet_token(self.cfg()), "NEW")   # 6 min left < 10 min margin
+
+    def test_expiry_from_jwt_when_response_has_none(self):
+        exp = int((datetime.now(timezone.utc) + timedelta(hours=24)).timestamp())
+        body = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+        r = mock.Mock(status_code=200)
+        r.json.return_value = {"token": f"h.{body}.s"}
+        with mock.patch.object(co2_mod.requests, "post", return_value=r):
+            co2_mod._wattnet_token(self.cfg())
+        cached = json.loads((self.tmp / "tok.json").read_text())
+        self.assertEqual(int(datetime.fromisoformat(cached["expires_at"]).timestamp()), exp)
+
+    def test_bad_login_is_a_clear_error(self):
+        with mock.patch.object(co2_mod.requests, "post", return_value=mock.Mock(status_code=401)):
+            with self.assertRaisesRegex(ValueError, "login rejected"):
+                co2_mod._wattnet_token(self.cfg())
+
+    def test_missing_login_is_a_clear_error(self):
+        with mock.patch.object(co2_mod.requests, "post", side_effect=AssertionError("login attempted")):
+            with self.assertRaisesRegex(ValueError, "WATTNET_EMAIL and WATTNET_PASSWORD"):
+                co2_mod._wattnet_token(make_config("[CO2_API]\nWATTNET_EMAIL=bot@x\n"))
+
+    def test_401_on_data_call_relogs_once(self):
+        denied = mock.Mock(status_code=401, is_redirect=False)
+        ok = mock.Mock(status_code=200, is_redirect=False)
+        end = datetime.now(timezone.utc)
+        ok.json.return_value = [{"series": [{"values": [
+            [(end - timedelta(minutes=15 * i)).strftime("%Y-%m-%dT%H:%M:%SZ"), 300] for i in range(96)]}]}]
+        with mock.patch.object(co2_mod.requests, "post",
+                               side_effect=[self.login_response("A"), self.login_response("B")]), \
+             mock.patch.object(co2_mod.requests, "get", side_effect=[denied, ok]) as get:
+            co2_mod.fetch_wattnet_24h(self.cfg())
+        self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], "Bearer B")
+
+
+class WattnetRejectedTokenTest(TempDirCase):
+    """Wattnet answers a rejected token with a 302 to its login page, not 401."""
+
+    def cfg(self):
+        return make_config("[CO2_API]\nWATTNET_EMAIL=bot@x\nWATTNET_PASSWORD=pw\n"
+                           f"WATTNET_TOKEN_CACHE={self.tmp / 'tok.json'}\n")
+
+    def login(self, token):
+        r = mock.Mock(status_code=200)
+        r.json.return_value = {"access_token": token,
+                               "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()}
+        return r
+
+    def data_ok(self):
+        r = mock.Mock(status_code=200, is_redirect=False)
+        end = datetime.now(timezone.utc)
+        r.json.return_value = [{"series": [{"values": [
+            [(end - timedelta(minutes=15 * i)).strftime("%Y-%m-%dT%H:%M:%SZ"), 300] for i in range(96)]}]}]
+        return r
+
+    def test_redirect_to_login_triggers_relogin(self):
+        redirect = mock.Mock(status_code=302, is_redirect=True)
+        with mock.patch.object(co2_mod.requests, "post", side_effect=[self.login("OLD"), self.login("NEW")]) as post, \
+             mock.patch.object(co2_mod.requests, "get", side_effect=[redirect, self.data_ok()]) as get:
+            _, current = co2_mod.fetch_wattnet_24h(self.cfg())
+        self.assertEqual(current, 300)
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], "Bearer NEW")
+        self.assertFalse(get.call_args.kwargs["allow_redirects"])
+        # the new token replaced the dead one in the cache
+        self.assertEqual(json.loads((self.tmp / "tok.json").read_text())["token"], "NEW")
+
+    def test_fresh_token_still_rejected_is_a_clear_error(self):
+        redirect = mock.Mock(status_code=302, is_redirect=True)
+        with mock.patch.object(co2_mod.requests, "post", side_effect=[self.login("A"), self.login("B")]), \
+             mock.patch.object(co2_mod.requests, "get", side_effect=[redirect, redirect]):
+            with self.assertRaisesRegex(ValueError, "rejected a freshly issued token"):
+                co2_mod.fetch_wattnet_24h(self.cfg())
+
+    def test_html_body_is_a_clear_error(self):
+        html = mock.Mock(status_code=200, is_redirect=False)
+        html.headers = {"content-type": "text/html"}
+        html.json.side_effect = ValueError("Expecting value")
+        with mock.patch.object(co2_mod.requests, "post", return_value=self.login("A")), \
+             mock.patch.object(co2_mod.requests, "get", return_value=html):
+            with self.assertRaisesRegex(ValueError, "non-JSON data \\(text/html\\)"):
+                co2_mod.fetch_wattnet_24h(self.cfg())
 
 
 class CombineRatingsTest(unittest.TestCase):
@@ -201,10 +348,52 @@ class RunPipelineTest(TempDirCase):
             self.run_cfg("[aggregation]\nrating_type=max\n[PIPELINE]\nscore = co2, combine\nact = cpu_freq\n")
         self.assertEqual(self.set_freq.call_args[0][0], 7)       # no price plugin: CO2 passes through
 
-    def test_co2_failure_falls_back_to_neutral_rating(self):
-        self.run_cfg("[PIPELINE]\nscore = co2\nact = cpu_freq\n", co2=RuntimeError("401"))
-        self.assertEqual(self.set_freq.call_args[0][0], 5)
-        self.assertEqual(self.entry()["co2_grade"], "unknown")
+    def seed_history(self, *entries):
+        """entries: (minutes_ago, co2_grade, co2_fallback), newest first."""
+        now = datetime.now(timezone.utc)
+        history = [{"timestamp": (now - timedelta(minutes=m)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "co2_grade": g, "co2_fallback": fb} for m, g, fb in entries]
+        self.state.write_text(json.dumps({"static": {}, "history": history, "current": history[0]}))
+
+    CO2_ONLY = "[PIPELINE]\nscore = co2\nact = cpu_freq\n"
+
+    def test_co2_failure_without_history_does_not_slow_down(self):
+        self.run_cfg(self.CO2_ONLY, co2=RuntimeError("401"))
+        self.assertEqual(self.set_freq.call_args[0][0], 1)
+        entry = self.entry()
+        self.assertEqual(entry["co2_grade"], "unknown")
+        self.assertTrue(entry["co2_fallback"])
+        self.assertIn("no CO2 data within max age", entry["summary"])
+
+    def test_co2_failure_reuses_recent_grade(self):
+        self.seed_history((30, 9, False))
+        self.run_cfg(self.CO2_ONLY, co2=RuntimeError("401"))
+        self.assertEqual(self.set_freq.call_args[0][0], 9)
+        self.assertIn("reusing grade 9 from 30 min ago", self.entry()["summary"])
+
+    def test_co2_failure_ignores_grade_older_than_max_age(self):
+        self.seed_history((121, 9, False))
+        self.run_cfg(self.CO2_ONLY, co2=RuntimeError("401"))
+        self.assertEqual(self.set_freq.call_args[0][0], 1)
+
+    def test_co2_max_age_is_configurable(self):
+        self.seed_history((170, 9, False))
+        self.run_cfg("[CO2_API]\nMAX_AGE_MIN=180\n" + self.CO2_ONLY, co2=RuntimeError("401"))
+        self.assertEqual(self.set_freq.call_args[0][0], 9)
+
+    def test_co2_fallback_grade_is_not_chained(self):
+        # 10 min ago was itself a reuse of a grade now 130 min old: must not extend it
+        self.seed_history((10, 9, True), (130, 9, False))
+        self.run_cfg(self.CO2_ONLY, co2=RuntimeError("401"))
+        self.assertEqual(self.set_freq.call_args[0][0], 1)
+
+    def test_co2_failure_with_price_still_falls_back_to_price(self):
+        with mock.patch.object(pb, "get_current_energy_price", return_value=3000), \
+             mock.patch.object(pb, "get_averages_year", return_value=[1000] * 12), \
+             mock.patch.object(pb, "classify_price_by_median", return_value=("expensive", 8)):
+            self.run_cfg("[aggregation]\nrating_type=average\n[PIPELINE]\n"
+                         "score = price, co2, combine\nact = cpu_freq\n", co2=RuntimeError("401"))
+        self.assertEqual(self.set_freq.call_args[0][0], 8)        # price only, no fake CO2 = 1
 
     def test_executable_score_plugin_sets_rating(self):
         path = self.example("threshold_score.py")

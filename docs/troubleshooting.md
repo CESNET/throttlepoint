@@ -99,6 +99,9 @@ Test each source directly:
 curl -v https://spotovaelektrina.cz/api/v1/price/get-actual-price-czk
 curl -v -H "X-Api-Key: $KEY" -H "User-Agent: test" \
      https://www.nowtricity.com/api/current-emissions/czech-republic/
+# Wattnet: log in, then query with the returned token
+curl -X POST https://api.wattnet.eu/token-request/get_token \
+     -H "Content-Type: application/json" -d '{"email": "<email>", "password": "<password>"}'
 ```
 
 Usual causes: no outbound HTTPS from compute nodes (very common on HPC
@@ -123,6 +126,9 @@ is why the node keeps working and nothing looks broken.
 |---|---|
 | `nowtricity` | Missing/expired `NOWTRICITY_API_KEY`, or the quota is exhausted. Each run makes **two** calls: 288/day/node at a 10-minute interval. |
 | `nowtricity` | Wrong `NOWTRICITY_ZONE` slug. |
+| `wattnet` | `Wattnet needs WATTNET_EMAIL and WATTNET_PASSWORD`: the login is not set. |
+| `wattnet` | `Wattnet login rejected`: wrong email/password, or the account is not registered at [api.wattnet.eu/token-request](https://api.wattnet.eu/token-request/). |
+| `wattnet` | `Wattnet rejected a freshly issued token`: login works but the account has no API access. Contact Wattnet. (A rejected *cached* token is handled automatically: Wattnet answers it with a redirect to its login page, and ThrottlePoint logs in again once.) |
 | `wattnet` | Fewer than 24 hourly values returned; the call raises rather than working with a partial window. |
 | both | Egress blocked to that host specifically. |
 

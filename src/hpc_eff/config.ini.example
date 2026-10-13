@@ -5,8 +5,8 @@ POWERREADINGCMD=ipmitool dcmi power reading
 DEBUG=yes
 
 [CO2_API]
-# Which CO2 intensity API to use: nowtricity | wattnet
-TYPE=nowtricity
+# Which CO2 intensity API to use: wattnet (default) | nowtricity
+TYPE=wattnet
 
 # Nowtricity API credentials (https://www.nowtricity.com/)
 NOWTRICITY_USER_AGENT=UserAgentString
@@ -17,10 +17,21 @@ NOWTRICITY_ZONE=czech-republic
 # Wattnet API settings (used only when TYPE=wattnet)
 # Start/end timestamps are calculated automatically for the trailing 24h
 WATTNET_URL=https://api.wattnet.eu/v1/footprints
-WATTNET_API_KEY=***
+# Login. Wattnet has no API keys: tokens last 24 h and cannot be refreshed,
+# so ThrottlePoint requests one with these credentials and caches it in
+# WATTNET_TOKEN_CACHE until shortly before it expires. Wattnet suggests a
+# dedicated account (the email need not be a real mailbox), not a personal one.
+WATTNET_EMAIL=
+WATTNET_PASSWORD=
+#WATTNET_TOKEN_CACHE=/var/lib/hpc_eff/wattnet_token.json
 WATTNET_ZONE=CZ
 WATTNET_FOOTPRINT_TYPE=carbon
 WATTNET_SCOPE=operational
+
+# When the CO2 API fails, reuse the last real grade if it is at most this many
+# minutes old (data is hourly, so 120 = one missed hour plus slack). Older or
+# none: rating 1, i.e. no slowdown without evidence.
+MAX_AGE_MIN=120
 
 [logging]
 db_path=/var/lib/hpc_eff/history.db
@@ -154,12 +165,15 @@ weight_co2=0.4
 # Built-ins:  read: power, cpufreq | score: price, co2, combine |
 #             act: cpu_freq, cpu_thermo, gpu_power | record: db_log, state_json
 #
-# Example: regulate by CO2 alone (Nowtricity or Wattnet per [CO2_API]), no price:
-#
-#[PIPELINE]
-#score = co2
-#act   = cpu_freq
-#
+# DEFAULT: regulate by CO2 alone (Nowtricity or Wattnet per [CO2_API]), no price.
+# While this section is present, [MODE] control_mode is ignored. To use the
+# price+CO2 blend or temperature mode instead, comment this section out.
+
+[PIPELINE]
+read  = power, cpufreq
+score = co2
+act   = cpu_freq
+
 # Example: swap in your own executable. A [plugin:NAME] section with `exec`
 # (absolute path, root-owned, not group/world-writable) overrides a built-in
 # of the same name or defines a new plugin. Other keys are passed to the plugin.
