@@ -91,7 +91,7 @@ sudo apt install -y build-essential devscripts debhelper dh-python \
                     python3-all python3-setuptools fakeroot
 sudo apt install -y ipmitool cpufrequtils python3-numpy python3-requests
 make deb
-sudo dpkg -i ../hpc-eff_*.deb          # this also enables the cron job
+sudo dpkg -i ../hpc-eff_*.deb          # does not enable cron; see below
 ```
 
 Then configure and start:
@@ -149,7 +149,7 @@ JSON on stdout. Contract, built-in plugins, security rules and starter files:
 | Signal | Source | Notes |
 |---|---|---|
 | Electricity price | [spotovaelektrina.cz](https://spotovaelektrina.cz) (Czech OTE spot market) | Current price via API; the 12-month baseline is scraped from HTML |
-| Carbon intensity | [Nowtricity](https://www.nowtricity.com/) (default) or [Wattnet](https://api.wattnet.eu) | Selectable via `[CO2_API] TYPE`; Nowtricity needs an API key |
+| Carbon intensity | [Wattnet](https://api.wattnet.eu) (default) or [Nowtricity](https://www.nowtricity.com/) | Selectable via `[CO2_API] TYPE`; Nowtricity needs an API key, Wattnet a login (email + password, register at [api.wattnet.eu/token-request](https://api.wattnet.eu/token-request/)) |
 | Temperature | IPMI sensor, HTTP API, or your own Python module | "Bring your own reader": see [docs/configuration.md](docs/configuration.md#temperature_source-pluggable-temperature-reading) |
 
 ---

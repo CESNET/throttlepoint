@@ -43,8 +43,9 @@ The four things to set beyond the mode itself:
 
 | Section / key | Set it to | Notes |
 |---|---|---|
-| `[CO2_API] TYPE` | `nowtricity` or `wattnet` | Picks the backend. |
-| `[CO2_API] NOWTRICITY_API_KEY` | your key | Also set `NOWTRICITY_USER_AGENT` to something identifying your site. |
+| `[CO2_API] TYPE` | `wattnet` (default) or `nowtricity` | Picks the backend. |
+| `[CO2_API] NOWTRICITY_API_KEY` | your key | Only for `TYPE=nowtricity`. Also set `NOWTRICITY_USER_AGENT` to something identifying your site. |
+| `[CO2_API] WATTNET_EMAIL`, `WATTNET_PASSWORD` | your Wattnet login | Only for `TYPE=wattnet`. Wattnet has no API keys; register at [api.wattnet.eu/token-request](https://api.wattnet.eu/token-request/), see [configuration.md](configuration.md#typewattnet-default). |
 | `[frequency_tables]` | frequencies for your CPU, MHz, highest first | See [the frequency table](#co2-mode-the-frequency-table). |
 | `[aggregation]` | `rating_type` and weights | See below. |
 
@@ -61,11 +62,10 @@ DEBUG=yes
 control_mode=co2
 
 [CO2_API]
-TYPE=nowtricity
-NOWTRICITY_USER_AGENT=fzu-throttlepoint
-NOWTRICITY_API_KEY=<your key>
-NOWTRICITY_BASE_URL=https://www.nowtricity.com/api
-NOWTRICITY_ZONE=czech-republic
+TYPE=wattnet
+WATTNET_EMAIL=<your Wattnet login>
+WATTNET_PASSWORD=<password>
+WATTNET_ZONE=CZ
 
 [aggregation]
 rating_type=average

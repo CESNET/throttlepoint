@@ -6,11 +6,12 @@ set -e
 
 case "$1" in
     configure)
-        # Enable the cron job when package is installed
-        if [ -x /usr/bin/hpc-eff ]; then
-            echo "Setting up cron job for hpc-eff..."
-            /usr/bin/hpc-eff --enable 2>/dev/null || true
-        fi
+        # Cron is NOT enabled here: the shipped config has placeholder API keys,
+        # so regulating before the admin configures it would cap the CPU on no
+        # data. Upgrades keep an existing /etc/cron.d/hpc-eff untouched.
+        echo "hpc-eff installed. Set WATTNET_EMAIL and WATTNET_PASSWORD in"
+        echo "/etc/hpc_eff/config.ini (chmod 600), test with 'sudo hpc-eff', then"
+        echo "enable cron with 'sudo hpc-eff --enable'."
         ;;
     abort-upgrade|abort-remove|abort-deconfigure)
         ;;

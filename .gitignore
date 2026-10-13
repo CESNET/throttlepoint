@@ -1,7 +1,7 @@
 __pycache__
 config.ini
 config/.env
-
+dev/
 # Python build / install artifacts (pip install ., setup.py build)
 build/
 dist/
@@ -9,6 +9,7 @@ dist/
 src/*.egg-info/
 *.egg
 *.whl
+
 
 # Debian packaging build artifacts (dpkg-buildpackage / debhelper / pybuild)
 .pybuild/
