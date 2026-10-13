@@ -73,6 +73,55 @@ with the package under `/usr/share/doc/hpc-eff/examples/` (RPM: `/usr/share/doc/
 `template.py` (a blank starter), `threshold_score.py` (score from absolute
 gCO₂/kWh thresholds) and `echo_action.py` (an action that changes nothing).
 
+### Installing a plugin, step by step
+
+1. **Put the executable in a root-owned directory.** The file and its
+   directory must both be owned by root and not writable by group or others,
+   or the run aborts (see [Security](#security)).
+
+   ```bash
+   sudo mkdir -p /etc/hpc_eff/plugins
+   sudo cp my_score.py /etc/hpc_eff/plugins/
+   sudo chown -R root:root /etc/hpc_eff/plugins
+   sudo chmod 755 /etc/hpc_eff/plugins /etc/hpc_eff/plugins/my_score.py
+   ```
+
+   The first line of the script must be a shebang such as `#!/usr/bin/env python3`.
+
+2. **Declare it in `/etc/hpc_eff/config.ini`** (the same file as `[PIPELINE]`;
+   back it up first). The name after `plugin:` is the name you list in the
+   stage:
+
+   ```ini
+   [PIPELINE]
+   score = co2, my_score
+   act   = cpu_freq
+
+   [plugin:my_score]
+   exec = /etc/hpc_eff/plugins/my_score.py
+   ```
+
+3. **Test it by hand** before the next cron run. A plugin is a plain program,
+   so you can feed it a request yourself:
+
+   ```bash
+   echo '{"version":1,"stage":"score","plugin":"my_score","config":{},"context":{"co2_current":300},"state":{}}' \
+     | sudo /etc/hpc_eff/plugins/my_score.py
+   ```
+
+   It should print one JSON object. To try the whole pipeline without
+   touching the CPU, temporarily set `act = echo_action` (it only reports).
+
+4. **Run once and look at the result.** With `DEBUG=yes` in `[SYSTEM]`, run
+   `sudo hpc-eff`, then read `state_json_path` (default
+   `/var/lib/hpc_eff/state.json`): your `summary` appears under `current`, and
+   any failure is listed under `plugin_errors`.
+
+An error such as `Config error: ...` means the pipeline did not start and
+nothing was changed. Typical causes: the plugin name has no `[plugin:NAME]`
+section, it is listed under the wrong stage, or the file or its directory is
+not root-owned.
+
 ### The contract (version 1)
 
 The controller starts the executable, writes **one JSON request** to its stdin
@@ -141,11 +190,28 @@ Put plugins in a root-owned directory such as `/etc/hpc_eff/plugins/`
 `[plugin:NAME]` section, reach the plugin on stdin, never on the command
 line. Keep `config.ini` readable by root only if it holds credentials.
 
-### Two actions, one knob
+### Several actions, one knob each
 
-Two `act` plugins can set the same knob (for example `cpu_freq` and
-`cpu_thermo` both set the CPU max frequency). The later one wins, and a debug
-line names both whenever two actions report a `freq_max`. Pick one per resource.
+A stage takes a comma-separated list and runs it in the order written, so
+`act` can hold more than one plugin:
+
+```ini
+act = cpu_freq, echo_action
+```
+
+Here `cpu_freq` caps the CPU first, then `echo_action` reports. The rule is
+**one action per resource**: if two actions set the same thing, the later one
+overwrites the earlier one.
+
+| Combination | Result |
+|---|---|
+| `cpu_freq, echo_action` | fine: `echo_action` changes nothing |
+| `cpu_freq, gpu_power` | fine: they change different hardware (CPU and GPU) |
+| `cpu_freq, cpu_thermo` | conflict: both set the CPU max frequency, the last one wins |
+
+Whenever two actions report a `freq_max`, a debug line names both. The same
+order rule applies to `score`: the last plugin that sets `rating` wins, which
+is how a plugin listed after `combine` can override the built-in rating.
 
 ## Built-in plugins
 
@@ -161,6 +227,26 @@ line names both whenever two actions report a `freq_max`. Pick one per resource.
 | `gpu_power` | act | `[TEMPERATURE_SOURCE]`, `[GPU_POWER]` | `gpu_*` fields |
 | `db_log` | record | the whole context | one row in `hpc_eff_log` |
 | `state_json` | record | this run's entry | `state.json` |
+
+### What `act = cpu_freq` does
+
+The `score` stage only produces a number, `rating`. Nothing on the machine
+changes until an `act` plugin uses it, and `cpu_freq` is the built-in that
+does:
+
+1. It reads `rating` (1 to 10; 5 if no score plugin set one).
+2. It looks up a maximum frequency for that rating in the list for your CPU
+   model in `[frequency_tables]`. Rating 1 gets the highest entry, rating 10
+   the lowest, and ratings in between are spread across the list.
+3. It sets the CPU's **maximum** frequency to that value with
+   `cpupower frequency-set`. The CPU can still clock down below the cap; it
+   just cannot go above it.
+4. It reports the chosen value as `selected_freq_khz` (stored as `freq_max`).
+
+So a dirty or expensive hour (high rating) caps the CPU low, and a clean or
+cheap hour (low rating) lets it run at full speed. Without any `act` plugin
+the scores are still computed and logged, but the CPU is left alone. Setting
+the cap needs root.
 
 `[aggregation] rating_type` accepts `price`, `co2`, `average` and `max`.
 `co2` uses the CO₂ rating alone and falls back to the price rating, then to 5,
