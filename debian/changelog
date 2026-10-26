@@ -1,3 +1,12 @@
+hpc-eff (0.6-1) experimental; urgency=medium
+
+  * CO2-only regulation via Wattnet by default (login with WATTNET_EMAIL and
+    WATTNET_PASSWORD, 24 h token cached); Nowtricity removed.
+  * CO2 threshold mode: [CO2_API] THRESHOLD (default 430 g/kWh) with HYSTERESIS.
+  * Plugin pipeline: [PIPELINE] read/score/act/record, executable plugins.
+
+ -- CESNET <pailozian@cesnet.cz>  Mon, 26 Oct 2026 12:00:00 +0100
+
 hpc-eff (0.5-1) experimental; urgency=medium
 
   * Added configurable CO2 API backend: Nowtricity (default) or Wattnet.

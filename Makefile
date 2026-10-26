@@ -1,5 +1,5 @@
 NAME = hpc_eff
-VERSION = 0.5
+VERSION = 0.6
 RELEASE = 1
 RPMDIR = $(HOME)/rpmbuild
 TARBALL = dist/$(NAME)-$(VERSION).tar.gz

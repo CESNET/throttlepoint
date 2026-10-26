@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="hpc_eff",
-    version="0.5",
+    version="0.6",
     description="Energy Optimization Governor",
     long_description_content_type="text/markdown",
     author="CESNET",
