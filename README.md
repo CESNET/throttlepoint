@@ -2,15 +2,16 @@
 
 **Energy Optimization Governor** for HPC systems.
 
-ThrottlePoint dynamically caps CPU frequency and NVIDIA GPU power based on
-electricity price, grid carbon intensity, and temperature. Which signals drive
-the decision is fully configurable, and you can plug in your own temperature
-source.
+ThrottlePoint caps CPU frequency (and NVIDIA GPU power) based on grid carbon
+intensity, electricity price, or temperature. The shipped configuration
+throttles the CPU only while the Wattnet CO₂ intensity is above a threshold
+(430 gCO₂/kWh by default). Which signals drive the decision is configurable,
+and you can plug in your own steps.
 
 It runs from cron as root, with no daemon and no batch-system integration. Each
-run reads the signal its mode is configured for (a 1–10 rating from
-price and carbon intensity, or a temperature band) and sets the CPU's maximum
-scaling frequency accordingly. Running jobs are never signalled, paused, or
+run reads its signal (Wattnet CO₂ against the threshold by default, or a
+price/CO₂ rating or a temperature band) and sets the CPU's maximum scaling
+frequency accordingly. Running jobs are never signalled, paused, or
 killed; they run under a lower clock ceiling while conditions are bad.
 
 ---
@@ -97,14 +98,15 @@ sudo dpkg -i ../hpc-eff_*.deb          # does not enable cron; see below
 Then configure and start:
 
 ```bash
-sudo vi /etc/hpc_eff/config.ini        # pick control_mode, then its section (see below)
+sudo vi /etc/hpc_eff/config.ini        # set WATTNET_EMAIL and WATTNET_PASSWORD
 sudo hpc-eff                           # one real run: applies a cap immediately
 sudo hpc-eff --enable                  # install /etc/cron.d/hpc-eff (every 10 min)
 ```
 
-What to set depends on the mode: `co2` needs `[CO2_API]` (an API key) and
-`[frequency_tables]`; `temperature` needs `[TEMPERATURE_SOURCE]` and
-`[CPU_THERMO]`, and calls no external API at all.
+With the shipped config, the only required edit is the Wattnet login in
+`[CO2_API]`; check `[frequency_tables]` for your CPU. The `temperature` mode
+needs `[TEMPERATURE_SOURCE]` and `[CPU_THERMO]` instead and calls no external
+API.
 
 Full prerequisites and build detail: **[docs/install.md](docs/install.md)**.
 Configuration and verification: **[docs/deployment.md](docs/deployment.md)**.
@@ -115,12 +117,15 @@ Fleet rollout and uninstall:
 
 ## Regulation modes
 
-`[MODE] control_mode` is the single switch per node. It is required.
+The shipped config uses a `[PIPELINE]` section: CO₂ from Wattnet against
+`[CO2_API] THRESHOLD`. Without `[PIPELINE]`, `[MODE] control_mode` selects a
+preset and is then required.
 
-| Mode | CPU | GPU | Inputs |
+| Setup | CPU | GPU | Inputs |
 |---|---|---|---|
-| `co2` | rating 1–10 → max-frequency cap | untouched | spot price + grid carbon intensity |
-| `temperature` | hysteresis thermal bands | NVIDIA power limiting | one temperature sensor |
+| CO₂ threshold (shipped) | full speed, or the lowest table frequency above the threshold | untouched | Wattnet carbon intensity |
+| `control_mode=co2` | rating 1–10 → max-frequency cap | untouched | spot price + grid carbon intensity |
+| `control_mode=temperature` | hysteresis thermal bands | NVIDIA power limiting | one temperature sensor |
 
 CPU regulation is mutually exclusive: a node is driven either by carbon/price
 or by temperature, never both. Details:
@@ -149,7 +154,7 @@ JSON on stdout. Contract, built-in plugins, security rules and starter files:
 | Signal | Source | Notes |
 |---|---|---|
 | Electricity price | [spotovaelektrina.cz](https://spotovaelektrina.cz) (Czech OTE spot market) | Current price via API; the 12-month baseline is scraped from HTML |
-| Carbon intensity | [Wattnet](https://api.wattnet.eu) (default) or [Nowtricity](https://www.nowtricity.com/) | Selectable via `[CO2_API] TYPE`; Nowtricity needs an API key, Wattnet a login (email + password, register at [api.wattnet.eu/token-request](https://api.wattnet.eu/token-request/)) |
+| Carbon intensity | [Wattnet](https://api.wattnet.eu) | Needs a login (email + password, register at [api.wattnet.eu/token-request](https://api.wattnet.eu/token-request/)) |
 | Temperature | IPMI sensor, HTTP API, or your own Python module | "Bring your own reader": see [docs/configuration.md](docs/configuration.md#temperature_source-pluggable-temperature-reading) |
 
 ---

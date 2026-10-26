@@ -12,47 +12,6 @@ WATTNET_TOKEN_CACHE = '/var/lib/hpc_eff/wattnet_token.json'
 TOKEN_REFRESH_MARGIN = timedelta(minutes=10)
 
 
-def _nowtricity_url(config, endpoint):
-    """Build Nowtricity API URL from config: BASE_URL/endpoint/ZONE/"""
-    base = config.get('CO2_API', 'NOWTRICITY_BASE_URL',
-                      fallback='https://www.nowtricity.com/api').rstrip('/')
-    zone = config.get('CO2_API', 'NOWTRICITY_ZONE', fallback='czech-republic')
-    return f'{base}/{endpoint}/{zone}/'
-
-
-def fetch_emissions_data(api_headers, config):
-    """
-    Fetch emissions data for the past 24 hours from the Nowtricity API.
-
-    Returns:
-        list of int: A list of emission values (in g CO2eq/kWh).
-    """
-    url = _nowtricity_url(config, 'emissions-previous-24h')
-
-    response = requests.get(url, headers=api_headers, timeout=10)
-    response.raise_for_status()
-    data = response.json()
-
-    # Extract emission values
-    return [entry['value'] for entry in data['emissions']]
-
-
-def fetch_current_emission(api_headers, config):
-    """
-    Fetch the current emission value from the Nowtricity API.
-
-    Returns:
-        int: The current emission value (in g CO2eq/kWh).
-    """
-    url = _nowtricity_url(config, 'current-emissions')
-
-    response = requests.get(url, headers=api_headers, timeout=10)
-    response.raise_for_status()
-    data = response.json()
-
-    return data['emissions']['value']
-
-
 def _jwt_expiry(token):
     """The `exp` claim of a JWT as an aware datetime, or None. Not verified: only used for caching."""
     try:
@@ -98,8 +57,9 @@ def _wattnet_token(config, force_refresh=False):
     cached in WATTNET_TOKEN_CACHE (mode 600) until shortly before it expires,
     as Wattnet asks.
     """
-    email = config.get('CO2_API', 'WATTNET_EMAIL', fallback='').strip()
-    password = config.get('CO2_API', 'WATTNET_PASSWORD', fallback='').strip()
+    # raw=True: ConfigParser would otherwise treat '%' in a password as interpolation
+    email = config.get('CO2_API', 'WATTNET_EMAIL', fallback='', raw=True).strip()
+    password = config.get('CO2_API', 'WATTNET_PASSWORD', fallback='', raw=True).strip()
     if not (email and password):
         raise ValueError("Wattnet needs WATTNET_EMAIL and WATTNET_PASSWORD in [CO2_API]")
 
@@ -220,10 +180,14 @@ def fetch_wattnet_24h(config):
     for ts, value in merged.items():
         by_hour.setdefault(ts[:13], []).append(value)
 
-    # Newest hour first (to match Nowtricity order), last 24 hours. The newest
-    # hour may be partial (e.g. 12:00-12:30); its average is the "current" value.
+    # Newest clock hour first, last 24 hours (the 24 h history for grading)
     result = [round(sum(v) / len(v)) for _, v in sorted(by_hour.items(), reverse=True)][:24]
-    current_hourly = result[0] if result else None
+
+    # "Current" is the trailing 1 h average: the newest four 15-minute points,
+    # the signal the GreenDIGIT threshold simulator uses. Unlike the newest
+    # clock hour it never shrinks to a single point just after the hour.
+    newest = [merged[ts] for ts in sorted(merged)[-4:]]
+    current_hourly = round(sum(newest) / len(newest), 1)
 
     if len(result) < 24:
         raise ValueError(f"Wattnet API returned only {len(result)}/24 hourly values")
@@ -256,7 +220,7 @@ def assign_grade(current_value, historical_values):
 
 def co2_value(config):
     """
-    Main execution function - unified for both Nowtricity and Wattnet APIs.
+    CO2 intensity from Wattnet, graded against the last 24 hours.
 
     Args:
         config: configparser.ConfigParser instance with [CO2_API] section
@@ -268,22 +232,17 @@ def co2_value(config):
             - median_value: median of historical_values
             - grade: 1-10 rating based on percentile
     """
+    # Wattnet is the only backend. An old config still naming another one
+    # (e.g. TYPE=nowtricity, kept as a conffile across upgrades) fails loudly
+    # instead of silently switching source.
     api_type = config.get('CO2_API', 'TYPE', fallback='wattnet').strip().lower()
+    if api_type != 'wattnet':
+        raise ValueError(f"[CO2_API] TYPE={api_type} is no longer supported: Nowtricity was "
+                         "removed, set WATTNET_EMAIL and WATTNET_PASSWORD and drop TYPE")
 
-    if api_type == "wattnet":
-        historical_values, current_hourly = fetch_wattnet_24h(config)
-        # For current value, use the most recent hourly average
-        # (consistent with nowtricity where current ≈ history[0])
-        current_value = current_hourly if current_hourly is not None else historical_values[0]
-    else:
-        # Nowtricity: read credentials from [CO2_API]
-        headers = {
-            'User-Agent': config.get('CO2_API', 'NOWTRICITY_USER_AGENT', fallback='HPC-Eff-Agent'),
-            'X-Api-Key': config.get('CO2_API', 'NOWTRICITY_API_KEY')
-        }
-
-        historical_values = fetch_emissions_data(headers, config)
-        current_value = fetch_current_emission(headers, config)
+    historical_values, current_hourly = fetch_wattnet_24h(config)
+    # The most recent hourly average is the "current" value
+    current_value = current_hourly if current_hourly is not None else historical_values[0]
 
     median_value = statistics.median(historical_values)
     grade = assign_grade(current_value, historical_values)

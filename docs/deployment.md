@@ -4,18 +4,17 @@ Configuring, running, verifying, and tuning one node. Build and install the
 package first with [install.md](install.md); when this node is working,
 [cluster-rollout.md](cluster-rollout.md) covers the rest of the fleet.
 
-A compute node caps its CPU maximum frequency according to whichever signal
-`[MODE] control_mode` selects:
+A compute node caps its CPU maximum frequency from one signal:
 
-| Mode | Description | Use case |
-|------|-------------|----------|
-| `co2` | Price/CO₂ regulator only | Cost and carbon optimisation |
-| `temperature` | Temperature regulator + NVIDIA GPU power | Thermal management, datacenter continuity |
+| Setup | Description | Use case |
+|-------|-------------|----------|
+| **CO₂ threshold** (shipped config, `[PIPELINE]`) | Throttle while Wattnet CO₂ is above `THRESHOLD` | Carbon: slow down only on dirty electricity |
+| `control_mode=co2` (no `[PIPELINE]`) | Price + CO₂ rating 1–10 | Cost and carbon, throttles daily |
+| `control_mode=temperature` (no `[PIPELINE]`) | Temperature regulator + NVIDIA GPU power | Thermal management, datacenter continuity |
 
-`control_mode` is the single switch for the whole node; there are no separate
-feature flags to set. The CPU is driven by either temperature or price/CO₂, never both. GPU power
-regulation rides along with `temperature` mode only (NVIDIA GPUs only; safely
-no-ops on nodes without them).
+The CPU is driven by one of them, never two. GPU power regulation rides along
+with `temperature` mode only (NVIDIA GPUs only; safely no-ops on nodes
+without them).
 
 Neither mode is a fallback for the other. Pick per node according to what
 actually constrains it. What each mode does with its input is explained in
@@ -31,74 +30,63 @@ Edit `/etc/hpc_eff/config.ini`. If it is missing for any reason:
 sudo install -D -m 640 /etc/hpc_eff/config.ini.example /etc/hpc_eff/config.ini
 ```
 
-It is required; an unset or unknown value aborts the run. Everything below
-depends on which mode you picked.
+The shipped file is the CO₂ threshold setup below. `[MODE] control_mode` is
+needed only if you remove `[PIPELINE]` to use one of the older presets; then
+an unset or unknown value aborts the run.
 
-`[SYSTEM] POWERREADINGCMD` (`ipmitool dcmi power reading`) is logging-only in
-both modes. Leave it as is if you have no BMC; the failure is caught.
+`[SYSTEM] POWERREADINGCMD` (`ipmitool dcmi power reading`) is logging-only.
+Leave it as is if you have no BMC; the failure is caught.
 
-### Mode: `co2`
+### CO₂ threshold (shipped default)
 
-The four things to set beyond the mode itself:
+What to set:
 
 | Section / key | Set it to | Notes |
 |---|---|---|
-| `[CO2_API] TYPE` | `wattnet` (default) or `nowtricity` | Picks the backend. |
-| `[CO2_API] NOWTRICITY_API_KEY` | your key | Only for `TYPE=nowtricity`. Also set `NOWTRICITY_USER_AGENT` to something identifying your site. |
-| `[CO2_API] WATTNET_EMAIL`, `WATTNET_PASSWORD` | your Wattnet login | Only for `TYPE=wattnet`. Wattnet has no API keys; register at [api.wattnet.eu/token-request](https://api.wattnet.eu/token-request/), see [configuration.md](configuration.md#typewattnet-default). |
+| `[CO2_API] WATTNET_EMAIL`, `WATTNET_PASSWORD` | your Wattnet login | The only required edit. Wattnet has no API keys; register at [api.wattnet.eu/token-request](https://api.wattnet.eu/token-request/), see [configuration.md](configuration.md#wattnet). |
 | `[frequency_tables]` | frequencies for your CPU, MHz, highest first | See [the frequency table](#co2-mode-the-frequency-table). |
-| `[aggregation]` | `rating_type` and weights | See below. |
+| `[CO2_API] THRESHOLD`, `HYSTERESIS` | gCO₂/kWh | Shipped `430` and `5`. See below. |
 
-Minimum working `co2` config:
+Minimum working config (CO₂ only, the shipped default):
 
 ```ini
-[SYSTEM]
-SCORENAME=SPEC2017
-SCORE=3.8
-POWERREADINGCMD=ipmitool dcmi power reading
-DEBUG=yes
-
-[MODE]
-control_mode=co2
-
 [CO2_API]
-TYPE=wattnet
 WATTNET_EMAIL=<your Wattnet login>
 WATTNET_PASSWORD=<password>
-WATTNET_ZONE=CZ
-
-[aggregation]
-rating_type=average
-weight_price=0.6
-weight_co2=0.4
+THRESHOLD=430
+HYSTERESIS=5
 
 [frequency_tables]
 amd_epyc=2400,2000,1500
 default=3000,2800,2700,2600,2400,2200
 
-[logging]
-db_path=/var/lib/hpc_eff/history.db
-state_json_path=/var/lib/hpc_eff/state.json
-history_length=1000
-log_level=INFO
+[PIPELINE]
+read  = power, cpufreq
+score = co2
+act   = cpu_freq
 ```
 
-> **Caution:** the config file holds an API key and the package installs it
+> **Caution:** the config file holds the Wattnet password and the package installs it
 > mode 644. Tighten it with `sudo chmod 640 /etc/hpc_eff/config.ini`. Nothing
 > needs it world-readable; it only ever runs as root.
 
-#### Choosing how conservative to be
+#### Choosing the threshold
 
-`[aggregation] rating_type` decides how the two signals combine:
+A higher `THRESHOLD` throttles less often. On the CZ data of the GreenDIGIT
+simulator (Nov 2025 – Feb 2026):
 
-| Value | Effect | When to pick it |
+| `THRESHOLD` | Throttled time | Days with throttling (of 120) |
 |---|---|---|
-| `average` | Weighted mean (default 0.6 price / 0.4 CO₂) | Balanced; the recommended default to start from |
-| `max` | The worse of the two: throttle if *either* is bad | Maximum carbon and cost avoidance, most throttling |
-| `price` | Price only, CO₂ ignored | Pure cost optimisation, or no CO₂ API key yet |
+| 430 | 13.5 % | 31 (all in Jan–Feb) |
+| 440 | 4.9 % | 15 |
+| 450 | 2.3 % | 8 |
 
-The reasoning behind the 0.6/0.4 split is in
-[regulation-modes.md](regulation-modes.md#why-price-is-weighted-higher-than-carbon).
+The value can be changed on a running node: the next cron run (within
+10 minutes) uses it. Details: [configuration.md](configuration.md#threshold-when-to-throttle).
+
+`[aggregation]` (price + CO₂ weights) is not used by this setup; see
+[configuration.md](configuration.md) (`[aggregation]`) if you
+blend price and CO₂.
 
 ### Mode: `temperature`
 
@@ -181,20 +169,22 @@ sudo hpc-eff
 > **Warning:** there is no `--dry-run` flag; this applies the frequency cap
 > immediately. Do it on one node first, ideally a drained one.
 
-With `DEBUG=yes` you get the whole pipeline on stdout. In `co2` mode:
+With `DEBUG=yes` you get the whole pipeline on stdout. With the shipped
+config, at 437 g/kWh (above 430) on a Xeon Gold:
 
 ```
 [DEBUG] Starting HPC efficiency evaluator...
-[DEBUG] control_mode='co2' applied -> FEATURES {...}
-[DEBUG] Current electricity price (CZK/MWh): 2431
-[DEBUG] Average monthly prices last year (CZK/MWh): [...]
-[DEBUG] The current price of 2431 is average (6).
+[DEBUG] [PIPELINE] present and no control_mode: using the pipeline as configured
+[DEBUG] Pipeline: {'read': ['power', 'cpufreq'], 'score': ['co2'], 'act': ['cpu_freq'], 'record': ['db_log', 'state_json']}
 [DEBUG] Last 24 hours CO2 values (g CO2eq/kWh): [...]
-[DEBUG] Current CO2 value grade from 1 (low) to 10 (high): 4
-[DEBUG] Current rating: 5
-2026-08-21 10:00:03 INFO     | Set max frequency: cpupower frequency-set -u 2600000
-2026-08-21 10:00:03 INFO     | DB log entry inserted
+[DEBUG] Current CO2 value (g CO2eq/kWh): 437.2
+[DEBUG] Current rating: 10
+2026-10-26 10:43:15 INFO     | Set max frequency: cpupower frequency-set -u 2200000
+2026-10-26 10:43:15 INFO     | DB log entry inserted
 ```
+
+The `state.json` summary says why:
+`CO2 437.2 g/kWh, threshold 430 (release below 425): throttled (rating 10)`.
 
 In `temperature` mode there are no price or CO₂ lines. You get the reading and
 the band decision instead:
@@ -210,8 +200,8 @@ Only an actual band change logs `cpu_thermo applied target`. A steady node
 logs `Temperature 27.0°C → target 3.10GHz already set.` instead, which is the
 normal case, not a fault.
 
-`Config error: [MODE] control_mode must be one of: …` means you skipped
-[step 1](#1-configure).
+`Config error: [MODE] control_mode must be one of: …` means `[PIPELINE]` was
+removed and no `control_mode` is set; see [step 1](#1-configure).
 
 ---
 
@@ -229,17 +219,18 @@ This must match the frequency the run applied. If the log says success but
 sysfs is unchanged, the frequency tool is a no-op on this node; see
 [troubleshooting.md](troubleshooting.md).
 
-**The database got a row.** In `co2` mode:
+**The database got a row.** With the shipped config:
 
 ```bash
 sudo sqlite3 /var/lib/hpc_eff/history.db \
-  "SELECT timestamp, rating, rating_price, rating_co2, price, co2_current, freq_max
+  "SELECT timestamp, rating, co2_current, freq_max
    FROM hpc_eff_log ORDER BY id DESC LIMIT 5;"
 ```
 
-`rating_co2` being NULL means the CO₂ API call failed and the run silently
-fell back to the price rating. That is by design, but if it is NULL every
-time, your API key or egress is wrong.
+`rating` is 10 (throttled) or 1 (full speed). `co2_current` being NULL means
+the Wattnet call failed; the reason is in the `state.json` summary
+(`CO2 unavailable (...)`). If it is NULL every time, the login or egress is
+wrong.
 
 In `temperature` mode the rating and price columns stay NULL (nothing
 computes them), so look at the temperature columns instead:
@@ -335,7 +326,9 @@ amd_epyc=2400,2000,1500
 ```
 
 The rating picks an index across the list: rating 1 → first entry, rating 10 →
-last entry, everything else scaled evenly between. The number of entries is
+last entry, everything else scaled evenly between. With the shipped
+`THRESHOLD` only ratings 1 and 10 occur, so only the first entry (full speed)
+and the last entry (throttled) matter. The number of entries is
 your granularity: three entries means the node only ever has three clock
 ceilings. Six to eight gives a smooth response; two gives an on/off switch.
 
@@ -409,9 +402,9 @@ This writes `/etc/cron.d/hpc-eff`:
 */10 * * * * root /usr/bin/hpc-eff >/dev/null 2>&1
 ```
 
-Interval guidance differs by mode. In `co2` mode both the spot price and the
-CO₂ figures have hourly resolution, so anything below about 5 minutes adds API
-traffic without changing the decision. In `temperature` mode the interval is
+Interval guidance differs by mode. With the CO₂ setup the Wattnet data has
+15-minute resolution and the signal is a 1 h average, so anything below about
+5 minutes adds API traffic without changing the decision. In `temperature` mode the interval is
 also your reaction time to a hot room, and it sets how long recovery takes:
 upshifts step one band per run, so at 10 minutes a node needs 20 minutes of
 sustained cool to get from `LOW_FREQUENCY` back to `HIGH_FREQUENCY`. Shorten

@@ -18,8 +18,10 @@ Remember this is a real run: it applies a frequency change.
 Config error: [MODE] control_mode must be one of: temperature|co2 (got None).
 ```
 
-`[MODE] control_mode` is unset or misspelled. It is required and there is no
-default. Check the section header spelling too: configparser will not warn you
+There is no `[PIPELINE]` section and `[MODE] control_mode` is unset or
+misspelled. Without `[PIPELINE]` it is required and there is no default. The
+shipped config has a `[PIPELINE]`; if yours lacks it, copy that section from
+`/etc/hpc_eff/config.ini.example`. Check the section header spelling too: configparser will not warn you
 about a `[MODEL]` typo; it finds no key and the value reads as unset.
 
 ---
@@ -97,8 +99,6 @@ Test each source directly:
 
 ```bash
 curl -v https://spotovaelektrina.cz/api/v1/price/get-actual-price-czk
-curl -v -H "X-Api-Key: $KEY" -H "User-Agent: test" \
-     https://www.nowtricity.com/api/current-emissions/czech-republic/
 # Wattnet: log in, then query with the returned token
 curl -X POST https://api.wattnet.eu/token-request/get_token \
      -H "Content-Type: application/json" -d '{"email": "<email>", "password": "<password>"}'
@@ -124,13 +124,12 @@ is why the node keeps working and nothing looks broken.
 
 | Backend | Likely cause |
 |---|---|
-| `nowtricity` | Missing/expired `NOWTRICITY_API_KEY`, or the quota is exhausted. Each run makes **two** calls: 288/day/node at a 10-minute interval. |
-| `nowtricity` | Wrong `NOWTRICITY_ZONE` slug. |
+| old config | `TYPE=nowtricity is no longer supported`: an upgraded node kept its old config. Delete `TYPE` and the `NOWTRICITY_*` keys, add the Wattnet login. |
 | `wattnet` | `Wattnet needs WATTNET_EMAIL and WATTNET_PASSWORD`: the login is not set. |
 | `wattnet` | `Wattnet login rejected`: wrong email/password, or the account is not registered at [api.wattnet.eu/token-request](https://api.wattnet.eu/token-request/). |
 | `wattnet` | `Wattnet rejected a freshly issued token`: login works but the account has no API access. Contact Wattnet. (A rejected *cached* token is handled automatically: Wattnet answers it with a redirect to its login page, and ThrottlePoint logs in again once.) |
 | `wattnet` | Fewer than 24 hourly values returned; the call raises rather than working with a partial window. |
-| both | Egress blocked to that host specifically. |
+| `wattnet` | Egress blocked to `api.wattnet.eu` specifically. |
 
 On a large cluster, check the API quota before blaming the code: hundreds of
 nodes each polling every 10 minutes adds up fast.
@@ -240,8 +239,8 @@ sudo nvidia-smi -i 0 -pl 200        # does a manual set work?
 `hpc-eff` reads `/etc/hpc_eff/config.ini`, and **falls back to
 `src/hpc_eff/config.ini.example` relative to the current working directory** if
 that file is absent. Running from a git checkout with no installed config picks
-up the example, with a placeholder API key and whatever mode the example
-ships.
+up the example, with an empty Wattnet login, so every run reports
+`Wattnet needs WATTNET_EMAIL and WATTNET_PASSWORD` and runs at full speed.
 
 ```bash
 ls -l /etc/hpc_eff/config.ini

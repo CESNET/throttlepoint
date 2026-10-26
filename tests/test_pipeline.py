@@ -76,8 +76,8 @@ class WattnetParsingTest(unittest.TestCase):
             history, current, _median, grade = co2_mod.co2_value(cfg)
 
         self.assertEqual(len(history), 24)
-        self.assertEqual(current, history[0])
-        self.assertGreater(current, 190)         # newest hour (was ~102 before the fix)
+        self.assertEqual(current, 193.5)         # trailing 1 h: mean of the newest four points 192..195
+        self.assertGreater(current, 190)         # newest data (was ~102 before the fix)
         self.assertEqual(grade, 10)
 
 
@@ -100,7 +100,7 @@ class WattnetSeriesTest(unittest.TestCase):
              mock.patch.object(co2_mod.requests, "get", return_value=response):
             history, current = co2_mod.fetch_wattnet_24h(cfg)
         self.assertEqual(len(history), 24)
-        self.assertEqual(current, 300)                            # 12:00-12:30 preview hour, not 08:30
+        self.assertEqual(current, (320 + 300 * 3) / 4)            # trailing 1 h: 11:45 pending + 12:00-12:30 preview, not 08:30
         self.assertEqual(history[1], 320)                         # 11:00 hour, pending
         self.assertEqual(history[4], round((400 * 3 + 320) / 4))  # 08:00 hour: final 08:00-08:30 + pending 08:45
 
@@ -117,6 +117,14 @@ class WattnetSeriesTest(unittest.TestCase):
         self.assertEqual(current, 100)
 
 
+class RemovedBackendTest(unittest.TestCase):
+    def test_old_nowtricity_config_fails_loudly(self):
+        cfg = make_config("[CO2_API]\nTYPE=nowtricity\nNOWTRICITY_API_KEY=x\n")
+        with mock.patch.object(co2_mod.requests, "get", side_effect=AssertionError("network used")):
+            with self.assertRaisesRegex(ValueError, "Nowtricity was removed"):
+                co2_mod.co2_value(cfg)
+
+
 class WattnetTokenTest(TempDirCase):
     """Login, cache and refresh of the 24 h Wattnet token."""
 
@@ -129,6 +137,14 @@ class WattnetTokenTest(TempDirCase):
         r.json.return_value = {"access_token": token,
                                "expires_at": (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()}
         return r
+
+    def test_percent_in_password_is_sent_verbatim(self):
+        cfg = configparser.ConfigParser()          # the interpolating parser main.py uses
+        cfg.read_string(f"[CO2_API]\nWATTNET_EMAIL=bot@x\nWATTNET_PASSWORD=Ab%9xyz%%\n"
+                        f"WATTNET_TOKEN_CACHE={self.tmp / 'tok.json'}\n")
+        with mock.patch.object(co2_mod.requests, "post", return_value=self.login_response()) as post:
+            co2_mod._wattnet_token(cfg)
+        self.assertEqual(post.call_args.kwargs["json"], {"email": "bot@x", "password": "Ab%9xyz%%"})
 
     def test_login_then_cache_hit(self):
         with mock.patch.object(co2_mod.requests, "post", return_value=self.login_response()) as post:
@@ -394,6 +410,120 @@ class RunPipelineTest(TempDirCase):
             self.run_cfg("[aggregation]\nrating_type=average\n[PIPELINE]\n"
                          "score = price, co2, combine\nact = cpu_freq\n", co2=RuntimeError("401"))
         self.assertEqual(self.set_freq.call_args[0][0], 8)        # price only, no fake CO2 = 1
+
+    # ---- threshold mode ([CO2_API] THRESHOLD)
+    TH = "[CO2_API]\nTHRESHOLD=430\nHYSTERESIS=5\n[PIPELINE]\nscore = co2\nact = cpu_freq\n"
+
+    def seed_entries(self, *entries):
+        """entries: (minutes_ago, extra_fields), newest first."""
+        now = datetime.now(timezone.utc)
+        history = [dict({"timestamp": (now - timedelta(minutes=m)).strftime("%Y-%m-%dT%H:%M:%SZ")}, **f)
+                   for m, f in entries]
+        self.state.write_text(json.dumps({"static": {}, "history": history, "current": history[0]}))
+
+    def co2_now(self, value):
+        return (list(range(300, 324)), value, 310, 7)          # percentile grade 7 must be ignored
+
+    def test_threshold_below_runs_full_speed(self):
+        self.run_cfg(self.TH, co2=self.co2_now(429.9))
+        self.assertEqual(self.set_freq.call_args[0][0], 1)
+        e = self.entry()
+        self.assertIs(e["co2_throttled"], False)
+        self.assertEqual(e["co2_threshold"], 430)
+        self.assertIn("full speed", e["summary"])
+
+    def test_threshold_above_throttles_to_table_minimum(self):
+        self.run_cfg(self.TH, co2=self.co2_now(430.1))
+        self.assertEqual(self.set_freq.call_args[0][0], 10)     # rating 10 = lowest table value
+        self.assertIs(self.entry()["co2_throttled"], True)
+
+    def test_threshold_exactly_equal_is_not_above(self):
+        self.run_cfg(self.TH, co2=self.co2_now(430))
+        self.assertEqual(self.set_freq.call_args[0][0], 1)
+
+    def test_hysteresis_holds_throttle_until_below_release(self):
+        self.seed_entries((10, {"co2_throttled": True, "co2_grade": 9}))
+        self.run_cfg(self.TH, co2=self.co2_now(425.5))         # above 430 - 5
+        self.assertEqual(self.set_freq.call_args[0][0], 10)
+
+    def test_hysteresis_releases_below_threshold_minus_hysteresis(self):
+        self.seed_entries((10, {"co2_throttled": True, "co2_grade": 9}))
+        self.run_cfg(self.TH, co2=self.co2_now(424.9))
+        self.assertEqual(self.set_freq.call_args[0][0], 1)
+
+    def test_hysteresis_does_not_apply_on_the_way_up(self):
+        self.seed_entries((10, {"co2_throttled": False, "co2_grade": 3}))
+        self.run_cfg(self.TH, co2=self.co2_now(428))
+        self.assertEqual(self.set_freq.call_args[0][0], 1)
+
+    def test_threshold_outage_reuses_recent_decision(self):
+        self.seed_entries((30, {"co2_throttled": True, "co2_threshold": 430.0, "co2_grade": 9, "co2_fallback": False}))
+        self.run_cfg(self.TH, co2=RuntimeError("401"))
+        self.assertEqual(self.set_freq.call_args[0][0], 10)
+        self.assertIn("reusing the throttled decision from 30 min ago", self.entry()["summary"])
+
+    def test_threshold_outage_stale_decision_runs_full_speed(self):
+        self.seed_entries((121, {"co2_throttled": True, "co2_grade": 9, "co2_fallback": False}))
+        self.run_cfg(self.TH, co2=RuntimeError("401"))
+        self.assertEqual(self.set_freq.call_args[0][0], 1)
+
+    def test_threshold_outage_ignores_old_percentile_grade(self):
+        # an entry from before THRESHOLD was configured has a grade but no decision
+        self.seed_entries((10, {"co2_grade": 9, "co2_fallback": False}))
+        self.run_cfg(self.TH, co2=RuntimeError("401"))
+        self.assertEqual(self.set_freq.call_args[0][0], 1)
+
+    def test_threshold_fallback_decision_is_not_chained(self):
+        self.seed_entries((10, {"co2_throttled": True, "co2_fallback": True, "co2_grade": "unknown"}),
+                          (130, {"co2_throttled": True, "co2_grade": 9, "co2_fallback": False}))
+        self.run_cfg(self.TH, co2=RuntimeError("401"))
+        self.assertEqual(self.set_freq.call_args[0][0], 1)
+
+    def test_bad_threshold_value_runs_full_speed_with_reason(self):
+        self.run_cfg("[CO2_API]\nTHRESHOLD=430g\n[PIPELINE]\nscore = co2\nact = cpu_freq\n",
+                     co2=self.co2_now(500))
+        self.assertEqual(self.set_freq.call_args[0][0], 1)       # not cpu_freq's neutral 5
+        self.assertIn("THRESHOLD='430g' is not a number", self.entry()["summary"])
+
+    def test_outage_ignores_decision_made_under_another_threshold(self):
+        self.seed_entries((30, {"co2_throttled": True, "co2_threshold": 400.0, "co2_grade": 9, "co2_fallback": False}))
+        self.run_cfg(self.TH, co2=RuntimeError("401"))
+        self.assertEqual(self.set_freq.call_args[0][0], 1)
+
+    def test_stale_throttle_does_not_hold_hysteresis(self):
+        # cron was off for 3 days: 428 g is inside (425, 430] but this is a fresh start
+        self.seed_entries((3 * 24 * 60, {"co2_throttled": True, "co2_threshold": 430.0, "co2_grade": 9}))
+        self.run_cfg(self.TH, co2=self.co2_now(428))
+        self.assertEqual(self.set_freq.call_args[0][0], 1)
+
+    def test_bad_settings_run_full_speed_and_name_the_key(self):
+        for line, key in (("THRESHOLD=nan", "THRESHOLD"), ("THRESHOLD=inf", "THRESHOLD"),
+                          ("HYSTERESIS=-5", "HYSTERESIS"), ("HYSTERESIS=5g", "HYSTERESIS"),
+                          ("MAX_AGE_MIN=120min", "MAX_AGE_MIN"), ("MAX_AGE_MIN=-1", "MAX_AGE_MIN")):
+            with self.subTest(line=line):
+                self.logs.clear()
+                self.run_cfg(f"[CO2_API]\nTHRESHOLD=430\n{line}\n[PIPELINE]\nscore = co2\nact = cpu_freq\n"
+                             if not line.startswith("THRESHOLD") else
+                             f"[CO2_API]\n{line}\n[PIPELINE]\nscore = co2\nact = cpu_freq\n",
+                             co2=self.co2_now(500))
+                self.assertEqual(self.set_freq.call_args[0][0], 1)
+                self.assertIn(f"[CO2_API] {key}=", self.entry()["summary"])
+
+    def test_hysteresis_typo_does_not_break_24h_mode(self):
+        self.run_cfg("[CO2_API]\nHYSTERESIS=5g\n[PIPELINE]\nscore = co2\nact = cpu_freq\n", co2=self.co2_now(500))
+        self.assertEqual(self.set_freq.call_args[0][0], 7)       # the percentile grade, unaffected
+
+    def test_max_age_typo_is_caught_without_an_outage(self):
+        self.run_cfg(self.TH + "", co2=self.co2_now(500))        # sanity: valid config works
+        self.assertEqual(self.set_freq.call_args[0][0], 10)
+        self.run_cfg("[CO2_API]\nTHRESHOLD=430\nMAX_AGE_MIN=120min\n[PIPELINE]\nscore = co2\nact = cpu_freq\n",
+                     co2=self.co2_now(500))
+        self.assertEqual(self.set_freq.call_args[0][0], 1)
+
+    def test_no_threshold_keeps_24h_ranking(self):
+        self.run_cfg("[PIPELINE]\nscore = co2\nact = cpu_freq\n", co2=self.co2_now(500))
+        self.assertEqual(self.set_freq.call_args[0][0], 7)       # the percentile grade
+        self.assertNotIn("co2_throttled", self.entry())
 
     def test_executable_score_plugin_sets_rating(self):
         path = self.example("threshold_score.py")

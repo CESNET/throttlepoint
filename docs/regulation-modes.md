@@ -1,5 +1,11 @@
 # Regulation modes
 
+> **The shipped default does not use `[MODE]`.** `config.ini.example` contains a
+> `[PIPELINE]` (`score = co2`, `act = cpu_freq`) with `[CO2_API] THRESHOLD`: the
+> CPU is throttled only while Wattnet CO₂ is above the threshold, see
+> [configuration.md](configuration.md#threshold-when-to-throttle). This page
+> describes the `[MODE] control_mode` presets used when `[PIPELINE]` is removed.
+
 `[MODE] control_mode` is the one switch that decides how a node is regulated.
 There are two values, and they are mutually exclusive by construction: a node
 is driven either by carbon/price or by temperature, never by both.
@@ -16,7 +22,7 @@ than running a no-op cycle.
 
 ## `co2` mode
 
-Deployment walkthrough: [deployment.md](deployment.md#mode-co2).
+Deployment walkthrough: [deployment.md](deployment.md#1-configure).
 This section explains what the numbers mean.
 
 ### The pipeline
