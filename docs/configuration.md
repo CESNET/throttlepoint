@@ -11,31 +11,38 @@ If that file does not exist, `hpc-eff` falls back to
 directory**, which is how you can run it straight from a git checkout, and
 also why a run from an unexpected directory can appear to ignore your settings.
 
-The whole file is parsed upfront regardless of mode, so a syntax error
-anywhere (even in a section your mode does not use) crashes the run. What
-depends on `[MODE] control_mode` is which sections' *values* the active
-regulator actually reads:
+The whole file is parsed upfront, so a syntax error anywhere (even in a
+section nothing reads) crashes the run.
 
-| Section | `co2` mode | `temperature` mode |
-|---|:--:|:--:|
-| `[SYSTEM]` | yes | yes |
-| `[MODE]` | yes | yes |
-| `[logging]` | yes | yes |
-| `[CO2_API]` | yes | n/a |
-| `[aggregation]` | yes | n/a |
-| `[frequency_tables]` | yes | n/a |
-| `[TEMPERATURE_SOURCE]` | n/a | yes |
-| `[CPU_THERMO]` | n/a | yes |
-| `[GPU_POWER]` | n/a | yes |
-| `[PIPELINE]`, `[plugin:NAME]` | optional | optional |
+Comments must be on their own line. `KEY=430   # note` makes the value
+`430   # note`; for a number that is a config error.
+
+The shipped `config.ini.example` regulates on Wattnet CO₂ against a
+threshold, through `[PIPELINE]`. The `[MODE]` presets are the older way and
+apply only when `[PIPELINE]` is absent. Which sections are read:
+
+| Section | Shipped default (`[PIPELINE]`, CO₂ threshold) | `control_mode=co2` (price + CO₂) | `control_mode=temperature` |
+|---|:--:|:--:|:--:|
+| `[CO2_API]` | yes | yes | n/a |
+| `[frequency_tables]` | yes | yes | n/a |
+| `[PIPELINE]`, `[plugin:NAME]` | yes | n/a | n/a |
+| `[logging]` | yes | yes | yes |
+| `[SYSTEM]` | power reading only | yes | yes |
+| `[MODE]` | n/a | yes | yes |
+| `[aggregation]` | n/a | yes | n/a |
+| `[TEMPERATURE_SOURCE]` | n/a | n/a | yes |
+| `[CPU_THERMO]` | n/a | n/a | yes |
+| `[GPU_POWER]` | n/a | n/a | yes |
 
 ---
 
 ## `[MODE]`
 
-The single user-facing switch. **Required**: an unset or unrecognised value
-makes the run exit with `Config error: [MODE] control_mode must be one of:
-temperature|co2` rather than silently doing nothing.
+Selects a preset when there is no `[PIPELINE]` section (the shipped config has
+one, so `[MODE]` is not needed there). Without `[PIPELINE]` it is
+**required**: an unset or unrecognised value makes the run exit with
+`Config error: [MODE] control_mode must be one of: temperature|co2` rather
+than silently doing nothing. With `[PIPELINE]` present, `[MODE]` is ignored.
 
 ```ini
 [MODE]
@@ -76,32 +83,13 @@ only, never acted on.
 
 ---
 
-## `[CO2_API]`: carbon intensity backend
+## `[CO2_API]`: carbon intensity (Wattnet)
 
-```ini
-[CO2_API]
-TYPE=wattnet
-```
+Wattnet is the only CO₂ backend. (Nowtricity was removed: a config that still
+sets `TYPE=nowtricity` fails with a clear error in the `state.json` summary;
+delete `TYPE` and the `NOWTRICITY_*` keys.)
 
-`TYPE` selects the backend; the other backend's keys are ignored.
-
-### `TYPE=nowtricity`
-
-| Key | Default |
-|---|---|
-| `NOWTRICITY_USER_AGENT` | `HPC-Eff-Agent` |
-| `NOWTRICITY_BASE_URL` | `https://www.nowtricity.com/api` |
-| `NOWTRICITY_ZONE` | `czech-republic` |
-
-Two endpoints are called per run: `emissions-previous-24h/<zone>/` and
-`current-emissions/<zone>/`. So a 10-minute interval means ~288 API calls per
-node per day: check that against your plan's quota before a cluster-wide
-rollout.
-
-An API key for the `nowtricity` backend is sent as `X-Api-Key`; get one
-at nowtricity.com.
-
-### `TYPE=wattnet` (default)
+### Wattnet
 
 **Wattnet requires a login (email and password). There are no API keys.**
 
@@ -118,7 +106,6 @@ at nowtricity.com.
 
 ```ini
 [CO2_API]
-TYPE=wattnet
 WATTNET_EMAIL=throttlepoint@your-site.example
 WATTNET_PASSWORD=<password>
 ```
@@ -159,19 +146,71 @@ The 24-hour window is computed automatically. Wattnet splits the response into
 several series by data state: final data ends about 4 hours ago, newer data is
 pending or a preview and may still be revised slightly. All series are merged
 (final data wins on overlap) so the newest point is about now. The 15-minute
-samples are averaged per clock hour; the newest, possibly partial, hour is the
-"current" value. **If fewer than 24 hourly values come back the call fails**,
-and the CO₂ fallback below applies.
+samples are averaged per clock hour for the 24 h history. The "current" value
+is the trailing 1 h average: the newest four 15-minute points. **If fewer than
+24 hourly values come back the call fails**, and the CO₂ fallback below applies.
+
+### Threshold: when to throttle
+
+```ini
+[CO2_API]
+# gCO2/kWh, 1 h average
+THRESHOLD=430
+# gCO2/kWh
+HYSTERESIS=5
+```
+
+Two levels only, the model of the GreenDIGIT threshold simulator:
+
+| Current CO₂ (1 h average) | Rating | CPU max frequency |
+|---|---|---|
+| above `THRESHOLD` | 10 | **last** value of the CPU's row in `[frequency_tables]` |
+| at or below `THRESHOLD` | 1 | **first** value (full speed) |
+
+Once throttled, full speed returns only when the value drops below
+`THRESHOLD - HYSTERESIS` (425 with the defaults), so a value hovering around
+the threshold does not switch the cap on and off every run.
+
+The value can be changed while running: cron re-reads `config.ini` on every
+run, so a new `THRESHOLD` applies within 10 minutes. A value that is not a
+finite number (`430g`, `nan`), a negative `HYSTERESIS` or `MAX_AGE_MIN`, or an
+inline comment after the value is treated like missing data: rating 1 and
+`CO2 config error ([CO2_API] KEY=...)` in the `state.json` summary.
+
+The throttle carries over between runs only from a recent run (at most
+`MAX_AGE_MIN` minutes old). After cron was off for longer, the next run starts
+fresh.
+
+`state.json` records `co2_threshold`, `co2_throttled` and a summary such as
+`CO2 437.2 g/kWh, threshold 430 (release below 425): throttled (rating 10)`.
+
+**How often it throttles** depends on the threshold. On the CZ winter data of
+the GreenDIGIT simulator (Nov 2025 – Feb 2026, 1 h average, hysteresis 5):
+
+| `THRESHOLD` | Throttled time | Days with throttling (of 120) |
+|---|---|---|
+| 430 | 13.5 % | 31 (all in Jan–Feb) |
+| 440 | 4.9 % | 15 |
+| 450 | 2.3 % | 8 |
+| 460 | 0.9 % | 3 |
+
+Without `THRESHOLD` the rating is the old 24 h percentile grade (1–10): the
+current hour ranked against the last 24 hours. That throttles every day, even
+on a clean day, because every day has a dirtiest hour.
 
 ### When the CO₂ fetch fails
 
-The last real CO₂ grade is reused if it is at most `MAX_AGE_MIN` minutes old
-(default 120, i.e. one missed hourly value plus slack). Older or none: rating 1,
-no slowdown without evidence. Each failure logs a WARNING and a
-`CO2 unavailable (...)` summary in `state.json`.
+The last real result is reused if it is at most `MAX_AGE_MIN` minutes old
+(default 120, i.e. one missed hourly value plus slack): the throttle decision
+with `THRESHOLD`, the grade without it. Older or none: rating 1, no slowdown
+without evidence. A reused result is never reused again, so an outage cannot
+extend it. Each failure logs a WARNING and a `CO2 unavailable (...)` summary in
+`state.json`.
 
 | Key | Default |
 |---|---|
+| `THRESHOLD` | unset (24 h ranking); shipped config: `430` |
+| `HYSTERESIS` | `5` |
 | `MAX_AGE_MIN` | `120` |
 
 ---
@@ -198,7 +237,9 @@ Values are **MHz, highest first**. The key is chosen by matching
 
 Selection is `index = round((rating - 1) / 9 × (len - 1))` over the
 descending-sorted list: rating 1 takes the first entry, rating 10 the last,
-the rest are spread evenly. The list length is your granularity; see
+the rest are spread evenly. With `THRESHOLD` (the shipped default) only
+ratings 1 and 10 occur, so only the first and the last entry matter: full
+speed and throttled. The list length is your granularity; see
 [deployment.md](deployment.md#co2-mode-the-frequency-table).
 
 If the section or the key is missing entirely the built-in fallback
@@ -208,6 +249,9 @@ Set `default` explicitly.
 ---
 
 ## `[aggregation]`: combining price and CO₂
+
+**Not used by the shipped config.** Only for the price + CO₂ blend:
+`control_mode=co2` without `[PIPELINE]`, or `score = price, co2, combine`.
 
 ```ini
 [aggregation]
@@ -380,8 +424,9 @@ plugins per stage.
 score = co2
 act   = cpu_freq
 
-[plugin:threshold_score]          # only for your own executables
-exec    = /etc/hpc_eff/plugins/threshold_score.py
+# only for your own executables
+[plugin:my_score]
+exec    = /etc/hpc_eff/plugins/my_score.py
 timeout = 30
 ```
 

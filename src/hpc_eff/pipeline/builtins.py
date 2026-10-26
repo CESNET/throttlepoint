@@ -148,37 +148,92 @@ def price(req, config, rt):
     return {"set": values, "state": state}
 
 
-def _last_fresh_co2_grade(config):
-    """(grade, age in minutes) of the newest real CO2 grade in state.json, or None.
-
-    Grid CO2 is published hourly, so a grade up to [CO2_API] MAX_AGE_MIN old
-    (default 120) still describes the grid; older ones are a guess.
-    """
-    max_age = config.getint("CO2_API", "MAX_AGE_MIN", fallback=120)
+def _state_history(config):
+    """state.json history (newest first), or [] when missing or unreadable."""
     path = config.get("logging", "state_json_path", fallback=DEFAULT_STATE_PATH)
     try:
         with open(path, "r") as f:
-            history = json.load(f).get("history", [])
+            return json.load(f).get("history", [])
     except Exception:
-        return None
-    now = datetime.now(timezone.utc)
-    for entry in history:
+        return []
+
+
+def _last_fresh_co2_grade(config):
+    """(entry, age in minutes) of the newest real CO2 evaluation in state.json, or None.
+
+    Grid CO2 is published hourly, so a result up to [CO2_API] MAX_AGE_MIN old
+    (default 120) still describes the grid; older ones are a guess.
+    """
+    max_age = _number(config, "MAX_AGE_MIN", 120, minimum=0, integer=True)
+    for entry in _state_history(config):
         if entry.get("co2_fallback") or not isinstance(entry.get("co2_grade"), int):
             continue
-        try:
-            ts = datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        except (KeyError, ValueError):
+        age_min = _entry_age_min(entry)
+        if age_min is None:
             continue
-        age_min = int((now - ts).total_seconds() // 60)
         if age_min <= max_age:
-            return entry["co2_grade"], age_min
+            return entry, age_min
         return None
     return None
 
 
+def _number(config, key, default, minimum=None, integer=False):
+    """[CO2_API] <key> as a finite number >= minimum; a clear ValueError naming the key otherwise."""
+    raw = config.get("CO2_API", key, fallback="").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw) if integer else float(raw)
+    except ValueError:
+        raise ValueError(f"[CO2_API] {key}={raw!r} is not a number")
+    if value != value or value in (float("inf"), float("-inf")):
+        raise ValueError(f"[CO2_API] {key}={raw!r} is not a finite number")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"[CO2_API] {key}={raw!r} must be at least {minimum}")
+    return value
+
+
+def _threshold(config):
+    """[CO2_API] THRESHOLD in gCO2/kWh, or None when unset (24 h ranking mode)."""
+    return _number(config, "THRESHOLD", None)
+
+
+def _entry_age_min(entry):
+    """Minutes since a state.json entry was written, or None when its timestamp is unusable."""
+    try:
+        ts = datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (KeyError, ValueError, TypeError):
+        return None
+    return int((datetime.now(timezone.utc) - ts).total_seconds() // 60)
+
+
+def _throttle_decision(current, threshold, hysteresis, was_throttled):
+    """Throttle above `threshold`; once throttled, release only below threshold - hysteresis."""
+    if was_throttled:
+        return current > threshold - hysteresis
+    return current > threshold
+
+
 def co2(req, config, rt):
-    """CO2 intensity (Nowtricity or Wattnet per [CO2_API]), graded 1-10 as a 24 h percentile."""
+    """CO2 intensity from Wattnet ([CO2_API]) -> rating.
+
+    With [CO2_API] THRESHOLD set: two levels. Above the threshold the rating is
+    10 (lowest frequency in the table), otherwise 1 (full table maximum), with
+    HYSTERESIS g/kWh before releasing. Without it: the 24 h percentile grade.
+    """
     co2_error = None
+    try:
+        threshold = _threshold(config)
+        # HYSTERESIS only matters with a threshold; a typo must not break 24 h mode
+        hysteresis = _number(config, "HYSTERESIS", 5.0, minimum=0) if threshold is not None else 0.0
+        max_age = _number(config, "MAX_AGE_MIN", 120, minimum=0, integer=True)
+    except ValueError as e:
+        # A typo must not leave cpu_freq on its neutral default (a mid-table cap)
+        logging.getLogger("hpc_eff").warning("CO2 config error: %s", e)
+        summary = f"CO2 config error ({' '.join(str(e).split())[:160]}); rating 1 (no slowdown)"
+        return {"set": {"rating": 1},
+                "state": {"rating": 1, "co2_fallback": True, "summary": summary}}
+    throttled = None
     try:
         history, current, median, grade = co2_value(config)
         rt.debug_log(f"Last 24 hours CO2 values (g CO2eq/kWh): {history}")
@@ -193,11 +248,25 @@ def co2(req, config, rt):
         reason = " ".join(str(e).split())[:160]
         co2_error = f"CO2 unavailable ({type(e).__name__}: {reason})"
         last = _last_fresh_co2_grade(config)
-        if last is not None:
-            grade, age_min = last
+        if (last is not None and threshold is not None and isinstance(last[0].get("co2_throttled"), bool)
+                and last[0].get("co2_threshold") == threshold):
+            entry, age_min = last
+            throttled = entry["co2_throttled"]
+            co2_error += (f"; reusing the {'throttled' if throttled else 'full speed'} decision "
+                          f"from {age_min} min ago")
+        elif last is not None and threshold is None:
+            entry, age_min = last
+            grade = entry["co2_grade"]
             co2_error += f"; reusing grade {grade} from {age_min} min ago"
         else:
             co2_error += "; no CO2 data within max age, rating 1 (no slowdown)"
+
+    if threshold is not None and current is not None:
+        previous = (_state_history(config) or [{}])[0]
+        age = _entry_age_min(previous)
+        # Carry the throttle over only from a recent run (cron off for days = fresh start)
+        was = bool(previous.get("co2_throttled")) and age is not None and age <= max_age
+        throttled = _throttle_decision(current, threshold, hysteresis, was)
 
     values = {
         "co2_current": current,
@@ -206,11 +275,21 @@ def co2(req, config, rt):
         # CO2 grade (1 low - 10 high) doubles as the CO2 rating
         "rating_co2": grade if isinstance(grade, int) else None,
     }
+    if threshold is not None:
+        # Threshold mode: the rating is the throttle decision, not the 24 h grade
+        values["rating_co2"] = None if throttled is None else (10 if throttled else 1)
     state = dict(values)
+    if threshold is not None:
+        state["co2_threshold"] = threshold
+        state["co2_throttled"] = throttled
     # A fallback grade is never reused itself, so a long outage cannot chain it forward
     state["co2_fallback"] = co2_error is not None
     if co2_error:
         state["summary"] = co2_error
+    elif threshold is not None:
+        verdict = "throttled (rating 10)" if throttled else "full speed (rating 1)"
+        state["summary"] = (f"CO2 {current:g} g/kWh, threshold {threshold:g}"
+                            f" (release below {threshold - hysteresis:g}): {verdict}")
     if values["rating_co2"] is not None:
         # On its own, the CO2 grade is the rating. `combine`, when listed, overrides it.
         values["rating"] = state["rating"] = values["rating_co2"]

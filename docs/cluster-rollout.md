@@ -14,12 +14,12 @@ coordination, no shared state, and no head node. Rollout is therefore only
 
 1. **Build once per architecture.** The RPM is `noarch`; the DEB builds as
    `amd64` and needs a matching build host for other architectures.
-2. **Ship one config per hardware group.** In `co2` mode `[frequency_tables]`
-   is the only hardware-specific part; the API keys and aggregation weights
-   are identical everywhere. In `temperature` mode it is `[CPU_THERMO]` and
+2. **Ship one config per hardware group.** With the shipped CO₂ config
+   `[frequency_tables]` is the only hardware-specific part; the Wattnet login
+   and `THRESHOLD` are identical everywhere. In `temperature` mode it is `[CPU_THERMO]` and
    `[GPU_POWER]`, and the grouping is by *sensor*, not just by CPU model.
 3. **Enable cron last**, after a manual `sudo hpc-eff` on one node of each
-   group has been verified. On Debian, remember the package already enabled it.
+   group has been verified. Neither package enables cron on install.
 4. **Stagger the interval** across large groups in `co2` mode if you are
    worried about hammering the upstream APIs: `--cron-interval 10` everywhere
    means hundreds of nodes fetching the same price in the same second. There

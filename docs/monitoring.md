@@ -37,12 +37,12 @@ sudo sqlite3 /var/lib/hpc_eff/history.db ".schema hpc_eff_log"
 | `price` | CZK/MWh | `co2` | current spot price |
 | `co2_current` | gCO₂eq/kWh | `co2` | current grid carbon intensity |
 | `co2_median` | gCO₂eq/kWh | `co2` | median of the last 24 h |
-| `co2_grade` | 1–10 | `co2` | CO₂ percentile grade, **TEXT column**, holds `unknown` when the API failed |
+| `co2_grade` | 1–10 | `co2` | CO₂ percentile grade against the last 24 h (informational with `THRESHOLD`), **TEXT column**, holds `unknown` when the API failed |
 | `power_w` | W | `co2` | instantaneous node power from `POWERREADINGCMD` |
 | `cpu_freq_current` | MHz | `co2` | frequency observed *before* this run's change |
-| `rating` | 1–10 | always | `co2`: the combined rating that chose `freq_max`. `temperature`: always `5`, an unused leftover; the thermal bands choose `freq_max` instead |
+| `rating` | 1–10 | always | the rating that chose `freq_max`. With `THRESHOLD` (shipped): `10` throttled, `1` full speed. Price + CO₂ mode: the combined rating. `temperature`: always `5`, an unused leftover; the thermal bands choose `freq_max` instead |
 | `rating_price` | 1–10 | `co2` | price component; NULL if the price fetch failed |
-| `rating_co2` | 1–10 | `co2` | CO₂ component; NULL if the CO₂ fetch failed |
+| `rating_co2` | 1–10 | `co2` | CO₂ component. With `THRESHOLD`: 10 or 1, also when a recent decision is reused during an outage; NULL when there is no usable CO₂ result |
 | `temperature` | °C | `temperature` | the sensor reading |
 | `gpu_power_limit` | W | `temperature` | limit in effect this run (== `gpu_target_power`) |
 | `gpu_target_power` | W | `temperature` | limit this run aimed for |
@@ -86,17 +86,17 @@ A JSON file, rewritten in full on every run:
     "score_name": "SPEC2017",
     "score_value": 3.8,
     "power_cmd": "ipmitool dcmi power reading",
-    "plugins": { "read": ["power", "cpufreq"], "score": ["price", "co2", "combine"],
+    "plugins": { "read": ["power", "cpufreq"], "score": ["co2"],
                  "act": ["cpu_freq"], "record": ["db_log", "state_json"] }
   },
   "current": {
-    "timestamp": "2026-08-21T10:00:03Z",
-    "rating": 5, "rating_price": 6, "rating_co2": 4,
-    "selected_freq_khz": 2600000,
-    "summary": "Price 2431 is average; Combined rating 5 (price 6, CO2 4)",
-    "action_price": "Price 2431 is average; Combined rating 5 (price 6, CO2 4)",
-    "price": 2431, "co2_current": 412, "co2_median": 448, "co2_grade": 4,
-    "power_w": 287, "cpu_freq_current": 2712
+    "timestamp": "2026-10-26T09:44:32Z",
+    "rating": 10, "rating_co2": 10,
+    "co2_current": 437.2, "co2_median": 393.0, "co2_grade": 10,
+    "co2_threshold": 430.0, "co2_throttled": true, "co2_fallback": false,
+    "selected_freq_khz": 2200000,
+    "summary": "CO2 437.2 g/kWh, threshold 430 (release below 425): throttled (rating 10); Rating 10 set 2200000kHz",
+    "power_w": 287, "cpu_freq_current": 2998
   },
   "history": [ "…same shape, newest first, up to history_length entries…" ]
 }
@@ -105,7 +105,13 @@ A JSON file, rewritten in full on every run:
 `current` is a copy of `history[0]`. `static` is refreshed every run, so it
 also serves as a liveness marker for the config the node is running with.
 
-The example above is a `co2`-mode node. A `temperature`-mode node carries
+The example above is a node with the shipped config, throttled at 437 g/kWh.
+`co2_threshold` and `co2_throttled` exist only in `state.json`, not in the
+database; `co2_throttled` is what the next run reads for the hysteresis.
+`co2_fallback: true` means this run had no fresh CO₂ data and either reused a
+recent decision or ran at full speed; `summary` says which. A price + CO₂ node
+carries `price`, `rating_price` and the deprecated `action_price` as well. A
+`temperature`-mode node carries
 `temperature`, `thermo_freq_limit`, and `action_temp` instead, plus the `gpu_*`
 fields on GPU nodes; the price and rating keys are absent entirely.
 

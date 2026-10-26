@@ -1,189 +1,51 @@
-[SYSTEM]
-SCORENAME=SPEC2017
-SCORE=3.8
-POWERREADINGCMD=ipmitool dcmi power reading
-DEBUG=yes
+# ThrottlePoint configuration. Reference: docs/configuration.md
+#
+# Setup: set WATTNET_EMAIL and WATTNET_PASSWORD, then
+#   chmod 600 /etc/hpc_eff/config.ini
+#   hpc-eff            # test run
+#   hpc-eff --enable   # install the cron job
 
 [CO2_API]
-# Which CO2 intensity API to use: wattnet (default) | nowtricity
-TYPE=wattnet
-
-# Nowtricity API credentials (https://www.nowtricity.com/)
-NOWTRICITY_USER_AGENT=UserAgentString
-NOWTRICITY_API_KEY=***
-NOWTRICITY_BASE_URL=https://www.nowtricity.com/api
-NOWTRICITY_ZONE=czech-republic
-
-# Wattnet API settings (used only when TYPE=wattnet)
-# Start/end timestamps are calculated automatically for the trailing 24h
-WATTNET_URL=https://api.wattnet.eu/v1/footprints
-# Login. Wattnet has no API keys: tokens last 24 h and cannot be refreshed,
-# so ThrottlePoint requests one with these credentials and caches it in
-# WATTNET_TOKEN_CACHE until shortly before it expires. Wattnet suggests a
-# dedicated account (the email need not be a real mailbox), not a personal one.
+# Wattnet account (https://api.wattnet.eu/token-request/)
 WATTNET_EMAIL=
 WATTNET_PASSWORD=
-#WATTNET_TOKEN_CACHE=/var/lib/hpc_eff/wattnet_token.json
+
+# Throttle above this CO2 intensity (gCO2/kWh, 1 h average)
+THRESHOLD=430
+# Release the throttle only below THRESHOLD - HYSTERESIS
+HYSTERESIS=5
+
 WATTNET_ZONE=CZ
 WATTNET_FOOTPRINT_TYPE=carbon
 WATTNET_SCOPE=operational
+WATTNET_URL=https://api.wattnet.eu/v1/footprints
+#WATTNET_TOKEN_CACHE=/var/lib/hpc_eff/wattnet_token.json
 
-# When the CO2 API fails, reuse the last real grade if it is at most this many
-# minutes old (data is hourly, so 120 = one missed hour plus slack). Older or
-# none: rating 1, i.e. no slowdown without evidence.
+# Minutes to keep the last decision if Wattnet is unreachable
 MAX_AGE_MIN=120
 
-[logging]
-db_path=/var/lib/hpc_eff/history.db
-log_level=INFO
-state_json_path=/var/lib/hpc_eff/state.json
-history_length=1000
-
-[MODE]
-# The SINGLE switch that selects how the node is regulated. Required.
-#
-#   temperature -> CPU thermal control (see [CPU_THERMO]) + NVIDIA GPU power
-#                  regulation (see [GPU_POWER])
-#   co2         -> CPU price/CO2 frequency control only (rating 1-10 -> max freq)
-#
-# CPU regulation is mutually exclusive (temperature OR price), so the two modes
-# never overlap. An unset or unknown value aborts the run.
-control_mode=co2
-
 [frequency_tables]
-# Per-CPU-model frequency tables (MHz), highest first. Used by the price/CO2
-# regulator to map a rating (1-10) onto a CPU max frequency.
-# AMD EPYC
+# CPU max frequency in MHz, highest first.
+# First value = full speed, last value = throttled.
 amd_epyc=2400,2000,1500
-
-# Intel Xeon Gold 6130
 intel_xeon_gold=3000,2900,2800,2700,2600,2200
-
-# Intel E5-2650v3
 intel_e5=3000,2800,2700,2600,2400,2300
-
-# Fallback for unknown model
 default=3000,2800,2700,2600,2400,2200
-
-[TEMPERATURE_SOURCE]
-# Where to read temperature from. TYPE can be: ipmi | http_api | custom
-
-# Example 1: IPMI sensor via ipmitool
-TYPE=ipmi
-IPMI_SENSOR_NAME=INLET_AIR_TEMP
-
-# Example 2: HTTP API with optional JSON extraction (GreenDIGIT style)
-# TYPE=http_api
-# HTTP_URL=http://192.168.1.100/api/greendigit/data
-# HTTP_JSON_PATH=temperature.value
-#   If the response is {"temperature": {"value": 25.5}, ...} then
-#   HTTP_JSON_PATH=temperature.value extracts 25.5. Omit it if the endpoint
-#   returns a plain number.
-
-# Example 3: Custom reader ("bring your own reader")
-# TYPE=custom
-# MODULE=/opt/mysensors/my_reader.py   # path to a .py file OR an importable dotted module name
-# FUNCTION=read                        # callable returning Celsius as a number; defaults to "read"
-
-[CPU_THERMO]
-# Temperature bands (degrees Celsius) and the target frequency for each band.
-MID_LIMIT=29
-HIGH_LIMIT=32
-
-# Target frequencies (string format, e.g. "3.10GHz")
-HIGH_FREQUENCY=3.10GHz
-MID_FREQUENCY=2.30GHz
-LOW_FREQUENCY=1.50GHz
-
-# Optional Slack webhook for thermal change notifications.
-#SLACK_URL=
-
-# ============================================================================
-# GPU POWER REGULATION (NVIDIA GPUs only)
-# ============================================================================
-
-[GPU_POWER]
-# Uses GLOBAL ambient temperature from [TEMPERATURE_SOURCE] (same as CPU_THERMO)
-# All GPUs get the SAME power limit based on this temperature.
-
-# Temperature thresholds (degrees Celsius)
-# MID_LIMIT: Start reducing power when temp exceeds this (default: 70°C)
-# HIGH_LIMIT: Aggressive power reduction when temp exceeds this (default: 80°C)
-MID_LIMIT=70
-HIGH_LIMIT=80
-
-# Power limits - can be absolute (Watts) or percentage of max (%)
-# HIGH_POWER: Normal operation (below MID_LIMIT) - default: 100%
-# MID_POWER: Reduced power (between MID_LIMIT and HIGH_LIMIT) - default: 70%
-# LOW_POWER: Minimum power (above HIGH_LIMIT) - default: 40%
-#
-# Examples for different GPU types:
-#   A100/H100 (absolute): HIGH_POWER=300, MID_POWER=200, LOW_POWER=100
-#   A40/RTX (percentage): HIGH_POWER=100%, MID_POWER=70%, LOW_POWER=40%
-HIGH_POWER=100%
-MID_POWER=70%
-LOW_POWER=40%
-
-# GPU regulation is logged together with CPU data in the unified hpc_eff_log
-# table of [logging] db_path -- there is no separate GPU database.
-
-# Optional Slack webhook for power change notifications
-# SLACK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ
-
-# ============================================================================
-# RATING AGGREGATION (price + CO2)
-# ============================================================================
-
-[aggregation]
-# How the final rating (1-10) that drives the CPU max frequency is computed:
-#   price   - price rating only (legacy behaviour; used when section is absent)
-#   average - weighted average of the price and CO2 ratings
-#   max     - the worse (higher) of the two ratings ("throttle if either is bad")
-#
-# If the CO2 API is unavailable, "average" and "max" fall back to the price
-# rating so the node keeps regulating.
-rating_type=average
-
-# Weights for rating_type=average (normalized by their sum, so they need not
-# add up to 1). Price is weighted higher because the two ratings are computed
-# against different baselines: the price rating compares against a full year
-# of monthly averages and is a stable, absolute signal, while the CO2 grade is
-# a percentile within only the last 24 hours and therefore sweeps the whole
-# 1-10 range every day - even on a uniformly clean day. Weighting CO2 equal or
-# higher would let that day-relative volatility dominate the frequency cap.
-weight_price=0.6
-weight_co2=0.4
-
-# ============================================================================
-# PLUGIN PIPELINE (optional; replaces the [MODE] control_mode presets)
-# ============================================================================
-# Each evaluation runs four stages: read -> score -> act -> record. Every step
-# is a plugin: a built-in, or your own executable (see docs/plugins.md).
-# Without a [PIPELINE] section the plan follows [MODE] control_mode and behaves
-# exactly as before.
-#
-# Built-ins:  read: power, cpufreq | score: price, co2, combine |
-#             act: cpu_freq, cpu_thermo, gpu_power | record: db_log, state_json
-#
-# DEFAULT: regulate by CO2 alone (Nowtricity or Wattnet per [CO2_API]), no price.
-# While this section is present, [MODE] control_mode is ignored. To use the
-# price+CO2 blend or temperature mode instead, comment this section out.
 
 [PIPELINE]
 read  = power, cpufreq
 score = co2
 act   = cpu_freq
 
-# Example: swap in your own executable. A [plugin:NAME] section with `exec`
-# (absolute path, root-owned, not group/world-writable) overrides a built-in
-# of the same name or defines a new plugin. Other keys are passed to the plugin.
-#
-#[PIPELINE]
-#score = co2, threshold_score
-#act   = cpu_freq
-#
-#[plugin:threshold_score]
-#exec    = /etc/hpc_eff/plugins/threshold_score.py
-#timeout = 30
-#low     = 150
-#high    = 450
+[logging]
+db_path=/var/lib/hpc_eff/history.db
+state_json_path=/var/lib/hpc_eff/state.json
+history_length=1000
+log_level=INFO
+
+[SYSTEM]
+# Power reading for the log only
+POWERREADINGCMD=ipmitool dcmi power reading
+SCORENAME=SPEC2017
+SCORE=3.8
+DEBUG=yes

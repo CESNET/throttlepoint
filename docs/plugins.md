@@ -30,15 +30,15 @@ omitted. A stage you leave out is empty, except `record`, which defaults to
 `db_log, state_json`.
 
 ```ini
-# Wattnet (or Nowtricity) CO2 alone drives the CPU cap. No price fetch.
+# Wattnet CO2 alone drives the CPU cap. No price fetch.
 [PIPELINE]
 score = co2
 act   = cpu_freq
 ```
 
 On its own, `co2` makes its grade the `rating`. Add `combine` only when `price`
-is listed too, to choose how the two mix (`[aggregation]`). To pick the data
-source, set `[CO2_API] TYPE = wattnet`.
+is listed too, to choose how the two mix (`[aggregation]`). The CO₂ data comes
+from Wattnet (`[CO2_API]`).
 
 An invalid pipeline (unknown key, unknown plugin, a plugin listed under the
 wrong stage, a bad executable) aborts the run before anything starts, with
@@ -54,10 +54,12 @@ A plugin is any executable. Declare it in a `[plugin:NAME]` section and list
 score = co2, threshold_score
 act   = cpu_freq, echo_action
 
+# timeout: seconds, default 30. Any other key is passed to the plugin as-is.
+# Comments must be on their own line: "30   # note" would be the value.
 [plugin:threshold_score]
 exec    = /etc/hpc_eff/plugins/threshold_score.py
-timeout = 30          # seconds, default 30
-low     = 150         # any other key is passed to the plugin as-is
+timeout = 30
+low     = 150
 high    = 450
 
 [plugin:echo_action]
@@ -70,8 +72,10 @@ the pipeline. `exec = builtin:NAME` selects a built-in explicitly.
 
 Working examples are in [`examples/plugins/`](../examples/plugins), installed
 with the package under `/usr/share/doc/hpc-eff/examples/` (RPM: `/usr/share/doc/hpc_eff/examples/`):
-`template.py` (a blank starter), `threshold_score.py` (score from absolute
-gCO₂/kWh thresholds) and `echo_action.py` (an action that changes nothing).
+`template.py` (a blank starter), `threshold_score.py` (a linear rating between
+two gCO₂/kWh values; an example of an executable score plugin; for a plain
+threshold use the built-in `[CO2_API] THRESHOLD` instead) and `echo_action.py`
+(an action that changes nothing).
 
 ### Installing a plugin, step by step
 
@@ -220,7 +224,7 @@ is how a plugin listed after `combine` can override the built-in rating.
 | `power` | read | `[SYSTEM] POWERREADINGCMD` | `power_w` |
 | `cpufreq` | read | the running CPU frequency | `cpu_freq_current` |
 | `price` | score | electricity price vs. a year of monthly averages | `price`, `rating_price` |
-| `co2` | score | `[CO2_API]` (Nowtricity or Wattnet), graded against the last 24 h | `co2_current`, `co2_median`, `co2_grade`, `rating_co2` |
+| `co2` | score | `[CO2_API]` (Wattnet): with `THRESHOLD`, rating 10 above it and 1 below (hysteresis `HYSTERESIS`); without, graded against the last 24 h | `co2_current`, `co2_median`, `co2_grade`, `rating_co2`, `co2_threshold`, `co2_throttled` |
 | `combine` | score | `rating_price`, `rating_co2`, `[aggregation]` | `rating` |
 | `cpu_freq` | act | `rating`, `[frequency_tables]` | `selected_freq_khz`, `freq_max` |
 | `cpu_thermo` | act | `[TEMPERATURE_SOURCE]`, `[CPU_THERMO]` | `temperature`, `freq_max` |

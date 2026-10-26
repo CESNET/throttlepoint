@@ -28,8 +28,8 @@ Additionally, for CO₂ regulation (the default):
 
 | Requirement | Why | Check |
 |---|---|---|
-| Outbound HTTPS | Price and CO₂ data | see below |
-| A Wattnet login (default) **or** a Nowtricity API key | CO₂ rating | Wattnet: email + password, registered at https://api.wattnet.eu/token-request/ (see [configuration.md](configuration.md#typewattnet-default)) · Nowtricity: https://www.nowtricity.com/ |
+| Outbound HTTPS | CO₂ data (and price, only if you enable it) | see below |
+| A Wattnet login | CO₂ rating | email + password, registered at https://api.wattnet.eu/token-request/ (see [configuration.md](configuration.md#wattnet)) |
 
 Additionally, for `control_mode = temperature`:
 
@@ -46,9 +46,8 @@ config; set `https_proxy` in the cron environment if you need one.
 
 | Host | Purpose | Required? |
 |---|---|---|
-| `spotovaelektrina.cz` | Current price and historical monthly averages | Yes: price rating |
-| `www.nowtricity.com` | CO₂ intensity (alternative backend) | Only if `TYPE=nowtricity` |
-| `api.wattnet.eu` | CO₂ intensity and the daily token login (default backend) | Only if `TYPE=wattnet` |
+| `api.wattnet.eu` | CO₂ intensity and the daily token login | Yes |
+| `spotovaelektrina.cz` | Current price and historical monthly averages | Only if you add the `price` plugin (not the default) |
 
 Pre-flight check:
 
@@ -140,7 +139,7 @@ gh run download <run-id> -n hpc-eff-deb   # or hpc-eff-rpm
 | `/etc/cron.d/hpc-eff` | Created by `hpc-eff --enable` |
 
 > **Note:** neither the DEB nor the RPM enables cron on install. Nothing
-> regulates until you run `sudo hpc-eff --enable`, after setting the API key
+> regulates until you run `sudo hpc-eff --enable`, after setting the Wattnet login
 > and checking one manual `sudo hpc-eff` run. Upgrading keeps an existing
 > cron job.
 
